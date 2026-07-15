@@ -2,9 +2,10 @@ mod app;
 mod config;
 mod gh;
 mod model;
+mod tmux;
 mod ui;
 
-use app::{App, DetailState, InputMode};
+use app::{App, DetailState, InputMode, Modal};
 use config::Config;
 use config::resolver::{self, Resolution};
 use ratatui::DefaultTerminal;
@@ -77,26 +78,39 @@ async fn run(terminal: &mut DefaultTerminal, app: &mut App) -> anyhow::Result<()
                     && key.kind == KeyEventKind::Press
                 {
                     let mut reschedule = false;
-                    match app.input_mode {
-                        InputMode::Normal => match key.code {
-                            KeyCode::Char('q') => break,
-                            KeyCode::Char('j') | KeyCode::Down => reschedule = app.next(),
-                            KeyCode::Char('k') | KeyCode::Up => reschedule = app.prev(),
-                            KeyCode::Tab => reschedule = app.cycle_preset(1),
-                            KeyCode::BackTab => reschedule = app.cycle_preset(-1),
-                            KeyCode::Char(c @ '1'..='9') => {
-                                reschedule = app.set_preset(c as usize - '1' as usize);
+                    if app.modal.is_open() {
+                        // A modal captures all input: confirm start-work, else dismiss.
+                        match key.code {
+                            KeyCode::Char('y') | KeyCode::Enter
+                                if matches!(app.modal, Modal::Confirm { .. }) =>
+                            {
+                                confirm_start_work(app).await;
                             }
-                            KeyCode::Char('/') => app.enter_filter(),
-                            _ => {}
-                        },
-                        InputMode::Filter => match key.code {
-                            KeyCode::Esc => { app.cancel_filter(); reschedule = true; }
-                            KeyCode::Enter => app.confirm_filter(),
-                            KeyCode::Backspace => { app.pop_filter(); reschedule = true; }
-                            KeyCode::Char(c) => { app.push_filter(c); reschedule = true; }
-                            _ => {}
-                        },
+                            _ => app.modal = Modal::None,
+                        }
+                    } else {
+                        match app.input_mode {
+                            InputMode::Normal => match key.code {
+                                KeyCode::Char('q') => break,
+                                KeyCode::Char('j') | KeyCode::Down => reschedule = app.next(),
+                                KeyCode::Char('k') | KeyCode::Up => reschedule = app.prev(),
+                                KeyCode::Tab => reschedule = app.cycle_preset(1),
+                                KeyCode::BackTab => reschedule = app.cycle_preset(-1),
+                                KeyCode::Char(c @ '1'..='9') => {
+                                    reschedule = app.set_preset(c as usize - '1' as usize);
+                                }
+                                KeyCode::Char('/') => app.enter_filter(),
+                                KeyCode::Char('s') => begin_start_work(app).await,
+                                _ => {}
+                            },
+                            InputMode::Filter => match key.code {
+                                KeyCode::Esc => { app.cancel_filter(); reschedule = true; }
+                                KeyCode::Enter => app.confirm_filter(),
+                                KeyCode::Backspace => { app.pop_filter(); reschedule = true; }
+                                KeyCode::Char(c) => { app.push_filter(c); reschedule = true; }
+                                _ => {}
+                            },
+                        }
                     }
                     if reschedule {
                         schedule_detail(app, &generation, &detail_tx);
@@ -156,4 +170,76 @@ fn schedule_detail(app: &mut App, generation: &Arc<AtomicU64>, detail_tx: &mpsc:
         let res = gh::issue::view(&repo, number).await;
         let _ = tx.send((g, id, res));
     });
+}
+
+/// Validate the start-work preconditions (real issue, linked skill, tmux session,
+/// `claude` window, not busy) and open the confirm modal, or a warning modal
+/// explaining why we can't proceed.
+async fn begin_start_work(app: &mut App) {
+    let number = match app.selected() {
+        None => return,
+        Some(item) => item.number,
+    };
+    let Some(issue) = number else {
+        app.modal = Modal::Message("Draft items have no issue number to start.".into());
+        return;
+    };
+    let Some(skill) = app.config.skill.start.clone() else {
+        app.modal = Modal::Message(
+            "No start-work skill linked for this project. Add a [projects.skill] start = \"…\" entry to config.".into(),
+        );
+        return;
+    };
+
+    let session = match tmux::current_session().await {
+        Ok(Some(s)) => s,
+        Ok(None) => {
+            app.modal = Modal::Message("Not inside tmux — start-work drives the project's tmux session.".into());
+            return;
+        }
+        Err(e) => {
+            app.modal = Modal::Message(format!("tmux error: {e}"));
+            return;
+        }
+    };
+
+    match tmux::has_claude_window(&session).await {
+        Ok(true) => {}
+        Ok(false) => {
+            app.modal = Modal::Message(format!("Session '{session}' has no 'claude' window to drive."));
+            return;
+        }
+        Err(e) => {
+            app.modal = Modal::Message(format!("tmux error: {e}"));
+            return;
+        }
+    }
+
+    match tmux::is_busy(&session).await {
+        Ok(true) => {
+            app.modal = Modal::Message(format!(
+                "Claude is busy in '{session}'. Wait for it to finish before starting a new ticket."
+            ));
+            return;
+        }
+        Ok(false) => {}
+        Err(e) => {
+            app.modal = Modal::Message(format!("tmux error: {e}"));
+            return;
+        }
+    }
+
+    app.modal = Modal::Confirm { issue, skill, session };
+}
+
+/// Drive the confirmed start: `/clear` the claude pane, then invoke the skill.
+async fn confirm_start_work(app: &mut App) {
+    let Modal::Confirm { issue, skill, session } = &app.modal else {
+        return;
+    };
+    let (issue, skill, session) = (*issue, skill.clone(), session.clone());
+    app.modal = match tmux::start_work(&session, &skill, issue).await {
+        Ok(()) => Modal::Message(format!("Started #{issue} with '{skill}' in {session}:claude.")),
+        Err(e) => Modal::Message(format!("Start-work failed: {e}")),
+    };
 }

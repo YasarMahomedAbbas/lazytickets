@@ -24,6 +24,21 @@ pub enum InputMode {
     Filter,
 }
 
+/// A modal overlay for the start-work flow (M5). Captures all input while open.
+pub enum Modal {
+    None,
+    /// Awaiting y/n before driving the claude pane.
+    Confirm { issue: u64, skill: String, session: String },
+    /// A warning or result line; any key dismisses it.
+    Message(String),
+}
+
+impl Modal {
+    pub fn is_open(&self) -> bool {
+        !matches!(self, Modal::None)
+    }
+}
+
 pub struct App {
     /// The full, unfiltered board.
     pub items: Vec<Item>,
@@ -37,6 +52,7 @@ pub struct App {
     pub list_state: ListState,
     pub detail: DetailState,
     pub detail_cache: HashMap<String, IssueDetail>,
+    pub modal: Modal,
 }
 
 impl App {
@@ -51,6 +67,7 @@ impl App {
             list_state: ListState::default(),
             detail: DetailState::Empty,
             detail_cache: HashMap::new(),
+            modal: Modal::None,
         };
         app.recompute(None);
         app

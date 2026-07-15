@@ -76,8 +76,8 @@ Acceptance = the "Done when" line actually works when you run the binary.
 | M2 | Detail pane (+ async loop, session cache) | ✅ done | `00dd21b`, `ee8f39d` |
 | M3 | Filtering (presets + live fuzzy) | ✅ done | `7edf88e` |
 | M4 | Resolver + first-run wizard | ✅ done | — |
-| M5 | Start-work (`s`) — headline feature | ▶ **next** | — |
-| M6 | Status writes | ☐ todo | — |
+| M5 | Start-work (`s`) — headline feature | ✅ done | — |
+| M6 | Status writes | ▶ **next** | — |
 | M7 | Open in browser + poll + polish | ☐ todo | — |
 
 _First usable as the real tmux tool at **M4** (unhardcodes the board); does the headline start-work flow at **M5**._
@@ -133,7 +133,14 @@ _First usable as the real tmux tool at **M4** (unhardcodes the board); does the 
 - **Done when:** launching from any registered repo opens its board with zero prompts;
   an unknown repo runs the wizard once, then resolves instantly forever after.
 
-### M5 — Start-work (`s`)  *(2 days)*  ← headline feature
+### M5 — Start-work (`s`)  *(2 days)* ✅  ← headline feature
+> `tmux.rs` (the only tmux-spawning module): `current_session`, `has_claude_window`, `is_busy`
+> (pane-ownership check copied from `sesh-list-bells`), `start_work` (send-keys `/clear` then the
+> explicit skill instruction, literal `-l` + Enter). An in-TUI `Modal` (confirm / message) captures
+> input; `s` validates preconditions (real issue, linked skill, tmux session, `claude` window, not
+> busy) and opens the confirm prompt. **Deferred:** label-based frontend/backend skill selection —
+> M5 uses the single `skill.start` from config (the wizard links one skill); a label→skill map is a
+> follow-up. Board-card auto-flip to *In progress* is M6.
 - `tmux.rs`:
   - detect current session: `tmux display-message -p '#S'`; target `-t <session>:claude`.
   - **busy-guard:** read `@claude_busy` tmux session option (copy the pane-ownership check from

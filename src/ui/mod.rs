@@ -2,6 +2,7 @@
 
 pub mod detail;
 pub mod list;
+pub mod modal;
 
 use crate::app::App;
 use ratatui::Frame;
@@ -21,4 +22,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     list::render(frame, left, app);
     detail::render(frame, right, app);
+
+    if app.modal.is_open() {
+        modal::render(frame, &app.modal);
+    }
 }
