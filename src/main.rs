@@ -1,36 +1,39 @@
+mod app;
+mod gh;
+mod model;
+mod ui;
+
+use app::App;
+use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
-use ratatui::style::{Color, Style};
-use ratatui::widgets::{Block, Borders, Paragraph};
-use ratatui::{DefaultTerminal, Frame};
 
-// Nord palette (see PLAN.md §3 / about.md): cyan = active/focused.
-const NORD_CYAN: Color = Color::Rgb(0x88, 0xc0, 0xd0);
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    // M1: resolver is hardcoded to travel-smart board #6. Git-remote resolution
+    // and the first-run wizard land in M4.
+    let items = gh::project::item_list("WhiteWolfStudio", 6).await?;
+    let app = App::new(items, "travel-smart #6".to_string());
 
-fn main() -> anyhow::Result<()> {
     let mut terminal = ratatui::init();
-    let result = run(&mut terminal);
+    let result = run(&mut terminal, app);
     ratatui::restore();
     result
 }
 
-fn run(terminal: &mut DefaultTerminal) -> anyhow::Result<()> {
+fn run(terminal: &mut DefaultTerminal, mut app: App) -> anyhow::Result<()> {
     loop {
-        terminal.draw(render)?;
+        terminal.draw(|frame| ui::render(frame, &mut app))?;
+
         if let Event::Key(key) = event::read()?
             && key.kind == KeyEventKind::Press
-            && key.code == KeyCode::Char('q')
         {
-            break;
+            match key.code {
+                KeyCode::Char('q') => break,
+                KeyCode::Char('j') | KeyCode::Down => app.next(),
+                KeyCode::Char('k') | KeyCode::Up => app.prev(),
+                _ => {}
+            }
         }
     }
     Ok(())
-}
-
-fn render(frame: &mut Frame) {
-    let block = Block::default()
-        .title(" lazytickets ")
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(NORD_CYAN));
-    let body = Paragraph::new("lazytickets — M0 skeleton\n\nPress q to quit.").block(block);
-    frame.render_widget(body, frame.area());
 }
