@@ -15,8 +15,9 @@ pub struct Item {
     pub repository: Option<String>,
     /// Board Status column value, e.g. "In progress". `None` if unset.
     pub status: Option<String>,
-    #[allow(dead_code)] // read from M3 (label filtering)
     pub labels: Vec<String>,
+    /// GitHub logins assigned to the item. Drives the `mine` preset.
+    pub assignees: Vec<String>,
     /// Web URL. `None` for drafts.
     #[allow(dead_code)] // read from M2 (detail) / M7 (open in browser)
     pub url: Option<String>,

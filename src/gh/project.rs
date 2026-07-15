@@ -18,6 +18,8 @@ struct RawItem {
     status: Option<String>,
     #[serde(default)]
     labels: Vec<String>,
+    #[serde(default)]
+    assignees: Vec<String>,
     content: Option<RawContent>,
 }
 
@@ -40,6 +42,7 @@ fn parse(bytes: &[u8]) -> Result<Vec<Item>> {
             title: r.title,
             status: r.status,
             labels: r.labels,
+            assignees: r.assignees,
             number: r.content.as_ref().and_then(|c| c.number),
             repository: r.content.as_ref().and_then(|c| c.repository.clone()),
             url: r.content.and_then(|c| c.url),
