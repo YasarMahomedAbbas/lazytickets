@@ -10,6 +10,9 @@ pub struct Item {
     /// Issue/PR number. `None` for draft items, which have no number.
     pub number: Option<u64>,
     pub title: String,
+    /// `owner/name` of the item's repo, used to target `gh issue view --repo`.
+    /// `None` for draft items.
+    pub repository: Option<String>,
     /// Board Status column value, e.g. "In progress". `None` if unset.
     pub status: Option<String>,
     #[allow(dead_code)] // read from M3 (label filtering)

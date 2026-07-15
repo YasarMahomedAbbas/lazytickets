@@ -21,11 +21,13 @@ struct RawItem {
     content: Option<RawContent>,
 }
 
-/// `number` and `url` live nested under `content` (and are absent for drafts).
+/// `number`, `url` and `repository` (`owner/name`) live nested under `content`
+/// (and are absent for drafts).
 #[derive(Deserialize)]
 struct RawContent {
     number: Option<u64>,
     url: Option<String>,
+    repository: Option<String>,
 }
 
 fn parse(bytes: &[u8]) -> Result<Vec<Item>> {
@@ -39,6 +41,7 @@ fn parse(bytes: &[u8]) -> Result<Vec<Item>> {
             status: r.status,
             labels: r.labels,
             number: r.content.as_ref().and_then(|c| c.number),
+            repository: r.content.as_ref().and_then(|c| c.repository.clone()),
             url: r.content.and_then(|c| c.url),
         })
         .collect())

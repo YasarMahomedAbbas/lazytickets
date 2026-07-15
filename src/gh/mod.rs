@@ -1,6 +1,7 @@
 //! The only module that spawns `gh` subprocesses. Everything else works on the
 //! typed structs in `crate::model`.
 
+pub mod issue;
 pub mod project;
 
 use anyhow::{Context, Result};

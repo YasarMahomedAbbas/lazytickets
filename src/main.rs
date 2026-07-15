@@ -3,37 +3,114 @@ mod gh;
 mod model;
 mod ui;
 
-use app::App;
+use app::{App, DetailState};
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
+use tokio::sync::mpsc;
+
+/// A completed detail fetch, tagged with the selection generation it was for.
+type DetailMsg = (u64, anyhow::Result<gh::issue::IssueDetail>);
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // M1: resolver is hardcoded to travel-smart board #6. Git-remote resolution
-    // and the first-run wizard land in M4.
+    // M1: resolver hardcoded to travel-smart board #6 (git-remote resolution + wizard land in M4).
     let items = gh::project::item_list("WhiteWolfStudio", 6).await?;
-    let app = App::new(items, "travel-smart #6".to_string());
+    let mut app = App::new(items, "travel-smart #6".to_string());
 
     let mut terminal = ratatui::init();
-    let result = run(&mut terminal, app);
+    let result = run(&mut terminal, &mut app).await;
     ratatui::restore();
     result
 }
 
-fn run(terminal: &mut DefaultTerminal, mut app: App) -> anyhow::Result<()> {
-    loop {
-        terminal.draw(|frame| ui::render(frame, &mut app))?;
+async fn run(terminal: &mut DefaultTerminal, app: &mut App) -> anyhow::Result<()> {
+    // Input: a blocking reader thread feeding an async channel, so key handling
+    // never blocks the tokio runtime (which is busy with detail fetches).
+    let (input_tx, mut input_rx) = mpsc::unbounded_channel::<Event>();
+    std::thread::spawn(move || {
+        while let Ok(ev) = event::read() {
+            if input_tx.send(ev).is_err() {
+                break; // UI gone
+            }
+        }
+    });
 
-        if let Event::Key(key) = event::read()?
-            && key.kind == KeyEventKind::Press
-        {
-            match key.code {
-                KeyCode::Char('q') => break,
-                KeyCode::Char('j') | KeyCode::Down => app.next(),
-                KeyCode::Char('k') | KeyCode::Up => app.prev(),
-                _ => {}
+    // Detail fetches: debounced and generation-guarded so fast scrolling doesn't
+    // fire a `gh` call per row and stale results are dropped.
+    let (detail_tx, mut detail_rx) = mpsc::unbounded_channel::<DetailMsg>();
+    let generation = Arc::new(AtomicU64::new(0));
+
+    // Kick off the fetch for the initially-selected item.
+    schedule_detail(app, &generation, &detail_tx);
+
+    loop {
+        terminal.draw(|frame| ui::render(frame, app))?;
+
+        tokio::select! {
+            maybe_ev = input_rx.recv() => {
+                let Some(ev) = maybe_ev else { break }; // input thread ended
+                if let Event::Key(key) = ev
+                    && key.kind == KeyEventKind::Press
+                {
+                    let moved = match key.code {
+                        KeyCode::Char('q') => break,
+                        KeyCode::Char('j') | KeyCode::Down => app.next(),
+                        KeyCode::Char('k') | KeyCode::Up => app.prev(),
+                        _ => false,
+                    };
+                    if moved {
+                        schedule_detail(app, &generation, &detail_tx);
+                    }
+                }
+            }
+            maybe_detail = detail_rx.recv() => {
+                // Apply only if this result is still for the current selection.
+                if let Some((g, res)) = maybe_detail
+                    && g == generation.load(Ordering::SeqCst)
+                {
+                    app.detail = match res {
+                        Ok(d) => DetailState::Loaded(d),
+                        Err(e) => DetailState::Error(e.to_string()),
+                    };
+                }
             }
         }
     }
     Ok(())
+}
+
+/// Bump the generation, set the pane to Loading, and spawn a debounced fetch for
+/// the current selection. A fetch whose generation is stale by the time it wakes
+/// (or completes) is discarded.
+fn schedule_detail(app: &mut App, generation: &Arc<AtomicU64>, detail_tx: &mpsc::UnboundedSender<DetailMsg>) {
+    let g = generation.fetch_add(1, Ordering::SeqCst) + 1;
+
+    // Extract what we need, dropping the borrow before mutating app.detail.
+    let target = app.selected().map(|i| (i.number, i.repository.clone()));
+    let (number, repo) = match target {
+        None => {
+            app.detail = DetailState::Empty;
+            return;
+        }
+        Some((Some(number), Some(repo))) => (number, repo),
+        Some(_) => {
+            app.detail = DetailState::Draft; // draft item: nothing to fetch
+            return;
+        }
+    };
+
+    app.detail = DetailState::Loading;
+    let generation = Arc::clone(generation);
+    let tx = detail_tx.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        if generation.load(Ordering::SeqCst) != g {
+            return; // superseded during the settle window — skip the call entirely
+        }
+        let res = gh::issue::view(&repo, number).await;
+        let _ = tx.send((g, res));
+    });
 }
