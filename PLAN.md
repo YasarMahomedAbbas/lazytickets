@@ -78,9 +78,11 @@ Acceptance = the "Done when" line actually works when you run the binary.
 | M4 | Resolver + first-run wizard | ✅ done | — |
 | M5 | Start-work (`s`) — headline feature | ✅ done | — |
 | M6 | Status writes | ✅ done | — |
-| M7 | Open in browser + poll + polish | ▶ **next** | — |
+| M7 | Open in browser + poll + polish | ✅ done | — |
 
 _First usable as the real tmux tool at **M4** (unhardcodes the board); does the headline start-work flow at **M5**._
+
+**v1 complete (M0–M7).** All milestones shipped; see the per-milestone notes below.
 
 ### M0 — Repo + skeleton  *(0.5 day)* ✅
 - Create **private** repo `github.com/YasarMahomedAbbas/lazytickets` (`gh repo create --private`).
@@ -173,7 +175,14 @@ _First usable as the real tmux tool at **M4** (unhardcodes the board); does the 
 - **Done when:** `s` auto-moves the card to In progress, and the manual mover moves a card to any column,
   both reflected on screen instantly.
 
-### M7 — Open in browser (`o`) + polish  *(0.5 day)*
+### M7 — Open in browser (`o`) + polish  *(0.5 day)* ✅
+> `o` → `gh issue view <n> --repo <r> --web` (`gh/issue.rs::open_web`); drafts get a message.
+> `poll.rs`: a 45s tokio timer re-fetches the board off the UI thread and delivers snapshots on a
+> channel; the loop adopts one only when it differs (`Item: PartialEq`), keeping selection — so
+> external changes appear silently. `r` force-refresh shares that channel (`poll::refresh_now`).
+> `?` opens a lazygit-style **Keybindings** overlay (`ui/modal.rs::render_help`). Keys are all plain
+> letters — no clash with tmux `C-f` or ghostty `Ctrl+Shift+*`. **Note:** the 45s external poll
+> wasn't waited out live; the shared `r` refresh path and the diff/keep-selection logic are exercised.
 - `o` → `gh issue view --web <n>` (or `gh project` url for project-only items).
 - Background poll (`poll.rs`): `tokio` timer every 30–60s, re-fetch board off the UI thread,
   diff against current state, repaint only on a real change (no flicker). Rate limit is a non-issue.

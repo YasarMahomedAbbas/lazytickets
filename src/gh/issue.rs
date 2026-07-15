@@ -97,6 +97,13 @@ pub async fn view(repo: &str, number: u64) -> Result<IssueDetail> {
     parse(&bytes)
 }
 
+/// Open an issue in the browser via `gh issue view --web`. `repo` is `owner/name`.
+pub async fn open_web(repo: &str, number: u64) -> Result<()> {
+    let num = number.to_string();
+    super::run(&["issue", "view", &num, "--repo", repo, "--web"]).await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -2,6 +2,7 @@ mod app;
 mod config;
 mod gh;
 mod model;
+mod poll;
 mod tmux;
 mod ui;
 
@@ -79,6 +80,11 @@ async fn run(terminal: &mut DefaultTerminal, app: &mut App) -> anyhow::Result<()
     // Background status writes (optimistic; reconciled on completion).
     let (write_tx, mut write_rx) = mpsc::unbounded_channel::<WriteMsg>();
 
+    // Background board poll (external changes appear silently within ~45s) + the
+    // `r` force-refresh, both delivering fresh snapshots on the same channel.
+    let (poll_tx, mut poll_rx) = mpsc::unbounded_channel::<Vec<model::Item>>();
+    poll::spawn(app.config.board.owner.clone(), app.config.board.number, poll_tx.clone());
+
     loop {
         terminal.draw(|frame| ui::render(frame, app))?;
 
@@ -92,7 +98,7 @@ async fn run(terminal: &mut DefaultTerminal, app: &mut App) -> anyhow::Result<()
                     if app.modal.is_open() {
                         // A modal captures all input. Messages dismiss on any key;
                         // pickers navigate with j/k and act on Enter.
-                        if matches!(app.modal, Modal::Message(_)) {
+                        if matches!(app.modal, Modal::Message(_) | Modal::Help) {
                             app.modal = Modal::None;
                         } else {
                             match key.code {
@@ -130,6 +136,13 @@ async fn run(terminal: &mut DefaultTerminal, app: &mut App) -> anyhow::Result<()
                                 KeyCode::Char('/') => app.enter_filter(),
                                 KeyCode::Char('s') => begin_start_work(app).await,
                                 KeyCode::Char('m') => open_status_mover(app).await,
+                                KeyCode::Char('o') => open_in_browser(app).await,
+                                KeyCode::Char('r') => poll::refresh_now(
+                                    app.config.board.owner.clone(),
+                                    app.config.board.number,
+                                    poll_tx.clone(),
+                                ),
+                                KeyCode::Char('?') => app.modal = Modal::Help,
                                 _ => {}
                             },
                             InputMode::Filter => match key.code {
@@ -167,6 +180,16 @@ async fn run(terminal: &mut DefaultTerminal, app: &mut App) -> anyhow::Result<()
                     // Roll back the optimistic move and report.
                     app.set_item_status(&item_id, revert);
                     app.modal = Modal::Message(format!("Status update failed (reverted):\n{e}"));
+                }
+            }
+            maybe_poll = poll_rx.recv() => {
+                if let Some(items) = maybe_poll
+                    && items != app.items
+                {
+                    // External change (or `r`): adopt the snapshot, keep selection.
+                    let keep = app.selected().map(|i| i.id.clone());
+                    app.items = items;
+                    app.recompute(keep);
                 }
             }
         }
@@ -285,6 +308,21 @@ async fn confirm_start_work(app: &mut App, write_tx: &mpsc::UnboundedSender<Writ
         }
         Err(e) => Modal::Message(format!("Start-work failed: {e}")),
     };
+}
+
+/// Open the selected ticket in the browser via `gh issue view --web`.
+async fn open_in_browser(app: &mut App) {
+    let Some((number, repo)) = app.selected().map(|i| (i.number, i.repository.clone())) else {
+        return; // no selection
+    };
+    match (number, repo) {
+        (Some(n), Some(repo)) => {
+            if let Err(e) = gh::issue::open_web(&repo, n).await {
+                app.modal = Modal::Message(format!("Couldn't open in browser:\n{e}"));
+            }
+        }
+        _ => app.modal = Modal::Message("Draft item — no issue to open in the browser.".into()),
+    }
 }
 
 /// Open the status mover for the selected card, fetching the board's Status

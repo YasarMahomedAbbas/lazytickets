@@ -32,6 +32,8 @@ pub enum Modal {
     Confirm { item_id: String, issue: u64, skill: String, session: String },
     /// Status column picker (M6). `selected` indexes `options`.
     StatusMove { item_id: String, options: Vec<String>, selected: usize },
+    /// Keybindings overlay (M7); any key dismisses.
+    Help,
     /// A warning or result line; any key dismisses it.
     Message(String),
 }

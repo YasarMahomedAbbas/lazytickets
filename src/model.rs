@@ -2,7 +2,7 @@
 //! clean structs the rest of the app works on.
 
 /// A single card on a GitHub Projects v2 board.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Item {
     /// Project item node id (`PVTI_…`) — stable handle for status writes (M6).
     #[allow(dead_code)] // read from M6 (status writes)

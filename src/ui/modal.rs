@@ -14,6 +14,10 @@ pub fn render(frame: &mut Frame, modal: &Modal) {
         render_mover(frame, options, *selected);
         return;
     }
+    if matches!(modal, Modal::Help) {
+        render_help(frame);
+        return;
+    }
 
     let (title, body, border) = match modal {
         Modal::Confirm { issue, skill, session, .. } => (
@@ -24,7 +28,7 @@ pub fn render(frame: &mut Frame, modal: &Modal) {
             NORD_CYAN,
         ),
         Modal::Message(msg) => (" lazytickets ", format!("{msg}\n\n[any key] dismiss"), NORD_AMBER),
-        Modal::StatusMove { .. } | Modal::None => return,
+        Modal::StatusMove { .. } | Modal::Help | Modal::None => return,
     };
 
     let area = centered(60, 11, frame.area());
@@ -62,6 +66,44 @@ fn render_mover(frame: &mut Frame, options: &[String], selected: usize) {
         Paragraph::new(lines).block(
             Block::default()
                 .title(" Move to status ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(NORD_CYAN)),
+        ),
+        area,
+    );
+}
+
+fn render_help(frame: &mut Frame) {
+    let rows = [
+        ("j / k · ↓ / ↑", "move selection"),
+        ("Tab / S-Tab · 1-9", "switch preset tab"),
+        ("/", "live fuzzy filter (Esc clears)"),
+        ("s", "start work (drive claude pane)"),
+        ("m", "move status column"),
+        ("o", "open in browser"),
+        ("r", "force refresh"),
+        ("?", "help"),
+        ("q", "quit"),
+    ];
+    let mut lines: Vec<Line> = rows
+        .iter()
+        .map(|(k, d)| {
+            Line::from(vec![
+                ratatui::text::Span::styled(format!("{k:<20}"), Style::default().fg(NORD_CYAN)),
+                ratatui::text::Span::raw(*d),
+            ])
+        })
+        .collect();
+    lines.push(Line::raw(""));
+    lines.push(Line::styled("[any key] dismiss", Style::default().fg(NORD_AMBER)));
+
+    let height = (lines.len() as u16 + 2).min(frame.area().height);
+    let area = centered(60, height, frame.area());
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .title(" Keybindings ")
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(NORD_CYAN)),
         ),
