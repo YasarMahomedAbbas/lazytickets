@@ -68,14 +68,28 @@ Build the modules roughly in the order of the milestones below, not all at once.
 Each milestone is independently runnable and demoable. Ship M1 fully before M2, etc.
 Acceptance = the "Done when" line actually works when you run the binary.
 
-### M0 — Repo + skeleton  *(0.5 day)*
+### Progress tracker
+| # | Milestone | Status | Commit |
+|---|---|---|---|
+| M0 | Repo + skeleton | ✅ done | `a0922bb` |
+| M1 | Read-only board fetch | ✅ done | `377b2f2` |
+| M2 | Detail pane (+ async loop, session cache) | ✅ done | `00dd21b`, `ee8f39d` |
+| M3 | Filtering (presets + live fuzzy) | ✅ done | `7edf88e` |
+| M4 | Resolver + first-run wizard | ▶ **next** | — |
+| M5 | Start-work (`s`) — headline feature | ☐ todo | — |
+| M6 | Status writes | ☐ todo | — |
+| M7 | Open in browser + poll + polish | ☐ todo | — |
+
+_First usable as the real tmux tool at **M4** (unhardcodes the board); does the headline start-work flow at **M5**._
+
+### M0 — Repo + skeleton  *(0.5 day)* ✅
 - Create **private** repo `github.com/YasarMahomedAbbas/lazytickets` (`gh repo create --private`).
 - `cargo new lazytickets`, edition 2024, add `.gitignore` (`/target`, `*.log`), add deps above.
 - Minimal `main.rs`: enter alternate screen, draw a "hello" ratatui frame, quit on `q`.
 - Initial commit + push.
 - **Done when:** `cargo run` opens a full-screen TUI that quits cleanly on `q` and restores the terminal.
 
-### M1 — Read-only board fetch  *(1–2 days)*
+### M1 — Read-only board fetch  *(1–2 days)* ✅
 - `gh/project.rs`: shell `gh project item-list 6 --owner WhiteWolfStudio --format json`,
   parse into `Vec<Item>` (title, number, status, labels, assignees, url).
 - `model.rs`: define `Item`, `Status`, `Label`.
@@ -84,7 +98,7 @@ Acceptance = the "Done when" line actually works when you run the binary.
 - Apply Nord palette (cyan focused, dim idle) from the start so later status colors slot in.
 - **Done when:** launching shows the live travel-smart board as a navigable list.
 
-### M2 — Detail pane  *(1 day)*
+### M2 — Detail pane  *(1 day)* ✅
 - `gh/issue.rs`: on selection, `gh issue view <n> --json title,body,labels,comments,url,state`
   → `IssueDetail`. This is the per-issue second fetch (decided in the note).
 - `ui/detail.rs`: right pane, lazygit-style split — body (wrapped), comments, status, labels, url.
@@ -92,7 +106,7 @@ Acceptance = the "Done when" line actually works when you run the binary.
 - Show a spinner/"loading…" while the detail fetch is in flight (async, off UI thread).
 - **Done when:** moving the cursor loads and renders each ticket's full detail on the right.
 
-### M3 — Filtering  *(1–2 days)*
+### M3 — Filtering  *(1–2 days)* ✅
 - `config/schema.rs`: `ProjectConfig` with `include {labels, statuses}`, `exclude_statuses`,
   `status_order`, and named `presets` (mirror `~/vault-automation/configs/*.json` format).
 - Preset tabs across the top of the list pane (gh-dash style: `mine`, `refine`, `frontend`, …);
@@ -101,7 +115,7 @@ Acceptance = the "Done when" line actually works when you run the binary.
 - Sort by `status_order`, then apply include/exclude.
 - **Done when:** preset tabs re-filter the list and `/` does live fuzzy narrowing on top.
 
-### M4 — Resolver + first-run wizard  *(2 days)*
+### M4 — Resolver + first-run wizard  *(2 days)* ◀ next
 - `config/resolver.rs`, try in order (stop at first hit):
   1. explicit per-folder override (path-keyed in global config)
   2. git-remote match — `git -C <cwd> rev-parse --show-toplevel` + `git remote get-url origin`,
