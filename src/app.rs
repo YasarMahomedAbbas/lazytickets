@@ -58,7 +58,7 @@ impl App {
 
     /// Title shown on the list pane.
     pub fn board_label(&self) -> String {
-        format!("{} #{}", self.config.name, self.config.number)
+        format!("{} #{}", self.config.name, self.config.board.number)
     }
 
     /// Rebuild `visible` from the active preset, exclusions and fuzzy query,

@@ -75,8 +75,8 @@ Acceptance = the "Done when" line actually works when you run the binary.
 | M1 | Read-only board fetch | ✅ done | `377b2f2` |
 | M2 | Detail pane (+ async loop, session cache) | ✅ done | `00dd21b`, `ee8f39d` |
 | M3 | Filtering (presets + live fuzzy) | ✅ done | `7edf88e` |
-| M4 | Resolver + first-run wizard | ▶ **next** | — |
-| M5 | Start-work (`s`) — headline feature | ☐ todo | — |
+| M4 | Resolver + first-run wizard | ✅ done | — |
+| M5 | Start-work (`s`) — headline feature | ▶ **next** | — |
 | M6 | Status writes | ☐ todo | — |
 | M7 | Open in browser + poll + polish | ☐ todo | — |
 
@@ -115,7 +115,12 @@ _First usable as the real tmux tool at **M4** (unhardcodes the board); does the 
 - Sort by `status_order`, then apply include/exclude.
 - **Done when:** preset tabs re-filter the list and `/` does live fuzzy narrowing on top.
 
-### M4 — Resolver + first-run wizard  *(2 days)* ◀ next
+### M4 — Resolver + first-run wizard  *(2 days)* ✅
+> Wizard is an **in-TUI screen** (not terminal prompts); scope is **board + skill only**
+> (`target_session`/`claude_subdir` deferred to M5, present as optional fields). No special-casing
+> for travel-smart. Pure resolution lives in `config/resolver.rs` (unit-tested); the interactive
+> wizard is split into `config/wizard.rs`. Board discovery (`list_boards`, `status_options`) is in
+> `gh/project.rs`. A new project's `status_order` is seeded from the board's Status field.
 - `config/resolver.rs`, try in order (stop at first hit):
   1. explicit per-folder override (path-keyed in global config)
   2. git-remote match — `git -C <cwd> rev-parse --show-toplevel` + `git remote get-url origin`,

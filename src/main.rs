@@ -5,7 +5,8 @@ mod model;
 mod ui;
 
 use app::{App, DetailState, InputMode};
-use config::schema::ProjectConfig;
+use config::Config;
+use config::resolver::{self, Resolution};
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use std::sync::Arc;
@@ -19,13 +20,32 @@ type DetailMsg = (u64, String, anyhow::Result<gh::issue::IssueDetail>);
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // M3: inline travel-smart config (disk loading + git-remote resolution land in M4).
-    let cfg = ProjectConfig::travel_smart();
-    let items = gh::project::item_list(&cfg.owner, cfg.number).await?;
-    let mut app = App::new(items, cfg);
+    // Resolve the current repo → its board (config), before touching the terminal.
+    let config = Config::load()?;
+    let cwd = std::env::current_dir()?;
+    let resolution = resolver::resolve(&config, &cwd);
 
     let mut terminal = ratatui::init();
-    let result = run(&mut terminal, &mut app).await;
+
+    // Known repo → open directly; unknown → the first-run wizard writes a config.
+    let cfg = match resolution {
+        Resolution::Project(p) => *p,
+        Resolution::Unknown { repo } => match config::wizard::run(&mut terminal, repo, &cwd, config).await {
+            Ok(p) => p,
+            Err(e) => {
+                ratatui::restore();
+                return Err(e);
+            }
+        },
+    };
+
+    let result = match gh::project::item_list(&cfg.board.owner, cfg.board.number).await {
+        Ok(items) => {
+            let mut app = App::new(items, cfg);
+            run(&mut terminal, &mut app).await
+        }
+        Err(e) => Err(e),
+    };
     ratatui::restore();
     result
 }

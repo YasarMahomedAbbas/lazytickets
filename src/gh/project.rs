@@ -50,6 +50,83 @@ fn parse(bytes: &[u8]) -> Result<Vec<Item>> {
         .collect())
 }
 
+/// A board as listed by `gh project list` — enough for the wizard's picker.
+#[derive(Debug, Clone)]
+pub struct BoardSummary {
+    pub number: u32,
+    pub title: String,
+}
+
+#[derive(Deserialize)]
+struct RawBoardList {
+    projects: Vec<RawBoard>,
+}
+
+#[derive(Deserialize)]
+struct RawBoard {
+    number: u32,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    closed: bool,
+}
+
+/// List the (open) Projects v2 boards owned by `owner`, for the first-run wizard.
+pub async fn list_boards(owner: &str) -> Result<Vec<BoardSummary>> {
+    let bytes = super::run(&["project", "list", "--owner", owner, "--format", "json"]).await?;
+    let raw: RawBoardList = serde_json::from_slice(&bytes).context("parsing gh project list JSON")?;
+    Ok(raw
+        .projects
+        .into_iter()
+        .filter(|b| !b.closed)
+        .map(|b| BoardSummary {
+            number: b.number,
+            title: b.title,
+        })
+        .collect())
+}
+
+#[derive(Deserialize)]
+struct RawFieldList {
+    fields: Vec<RawField>,
+}
+
+#[derive(Deserialize)]
+struct RawField {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    options: Vec<RawOption>,
+}
+
+#[derive(Deserialize)]
+struct RawOption {
+    name: String,
+}
+
+/// The `Status` single-select field's options, in board column order. Empty if
+/// the board has no field named "Status". Seeds a new project's `status_order`.
+pub async fn status_options(owner: &str, number: u32) -> Result<Vec<String>> {
+    let num = number.to_string();
+    let bytes = super::run(&[
+        "project",
+        "field-list",
+        &num,
+        "--owner",
+        owner,
+        "--format",
+        "json",
+    ])
+    .await?;
+    let raw: RawFieldList = serde_json::from_slice(&bytes).context("parsing gh project field-list JSON")?;
+    Ok(raw
+        .fields
+        .into_iter()
+        .find(|f| f.name.eq_ignore_ascii_case("Status"))
+        .map(|f| f.options.into_iter().map(|o| o.name).collect())
+        .unwrap_or_default())
+}
+
 /// Fetch every card on a board. `--limit 200` comfortably covers current boards
 /// (travel-smart #6 is ~66); paging is a later concern if a board outgrows it.
 pub async fn item_list(owner: &str, number: u32) -> Result<Vec<Item>> {

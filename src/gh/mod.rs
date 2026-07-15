@@ -22,3 +22,9 @@ pub async fn run(args: &[&str]) -> Result<Vec<u8>> {
     }
     Ok(output.stdout)
 }
+
+/// The authenticated user's login, for seeding the `mine` preset in the wizard.
+pub async fn viewer_login() -> Result<String> {
+    let bytes = run(&["api", "user", "--jq", ".login"]).await?;
+    Ok(String::from_utf8_lossy(&bytes).trim().to_string())
+}

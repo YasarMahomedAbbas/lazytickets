@@ -1,44 +1,84 @@
 //! Config types + the pure filtering/ordering logic they drive.
 
 use crate::model::Item;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Deserialize)]
+/// A single project entry in the global config. Modeled on PLAN.md §4.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectConfig {
     pub name: String,
-    pub owner: String,
-    pub number: u32,
+    /// `owner/name` repos that resolve to this project (git-remote match).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub repos: Vec<String>,
+    /// The GitHub Projects v2 board this project reads.
+    pub board: Board,
+    /// tmux session for start-work (M5). Optional until then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_session: Option<String>,
+    /// Subdir the claude pane runs in (M5). Optional until then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_subdir: Option<String>,
+    /// Skill names invoked by start-work / create (M5).
+    #[serde(default, skip_serializing_if = "Skill::is_empty")]
+    pub skill: Skill,
     /// Canonical column order, used to sort the list.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub status_order: Vec<String>,
     /// Statuses hidden by default (unless a preset explicitly includes one).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub exclude_statuses: Vec<String>,
     /// Saved views. The first entry is the default on launch.
     #[serde(default)]
     pub presets: Vec<Preset>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+/// A GitHub Projects v2 board coordinate.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Board {
+    pub owner: String,
+    pub number: u32,
+}
+
+/// Skill names linked to a project (M5 start-work). Both optional; falls back to
+/// a global `~/.claude/skills/` skill when unset.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Skill {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub create: Option<String>,
+}
+
+impl Skill {
+    fn is_empty(&self) -> bool {
+        self.start.is_none() && self.create.is_none()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Preset {
     pub name: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Filter::is_empty")]
     pub include: Filter,
 }
 
 /// An include filter. Empty fields don't constrain; within a field the match is
 /// OR, across fields it's AND (e.g. label Frontend AND status Refine).
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Filter {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub labels: Vec<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub statuses: Vec<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub assignees: Vec<String>,
 }
 
 impl Filter {
+    fn is_empty(&self) -> bool {
+        self.labels.is_empty() && self.statuses.is_empty() && self.assignees.is_empty()
+    }
+
     pub fn matches(&self, item: &Item) -> bool {
         let labels_ok = self.labels.is_empty()
             || self
@@ -91,8 +131,12 @@ impl ProjectConfig {
         }
         true
     }
+}
 
-    /// The inline travel-smart config used until M4 wires up disk loading.
+#[cfg(test)]
+impl ProjectConfig {
+    /// A travel-smart fixture used by the filtering/ordering tests. (Real configs
+    /// come from disk / the wizard since M4.)
     pub fn travel_smart() -> Self {
         let preset = |name: &str, f: Filter| Preset {
             name: name.to_string(),
@@ -100,8 +144,14 @@ impl ProjectConfig {
         };
         ProjectConfig {
             name: "travel-smart".to_string(),
-            owner: "WhiteWolfStudio".to_string(),
-            number: 6,
+            repos: vec!["WhiteWolfStudio/travel-smart".to_string()],
+            board: Board {
+                owner: "WhiteWolfStudio".to_string(),
+                number: 6,
+            },
+            target_session: None,
+            claude_subdir: None,
+            skill: Skill::default(),
             status_order: [
                 "Refine",
                 "Create Contract",
