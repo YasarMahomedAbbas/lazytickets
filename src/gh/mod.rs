@@ -3,6 +3,8 @@
 
 pub mod issue;
 pub mod project;
+pub mod scope;
+pub mod write;
 
 use anyhow::{Context, Result};
 use tokio::process::Command;

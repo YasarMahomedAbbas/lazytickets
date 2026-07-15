@@ -77,8 +77,8 @@ Acceptance = the "Done when" line actually works when you run the binary.
 | M3 | Filtering (presets + live fuzzy) | ✅ done | `7edf88e` |
 | M4 | Resolver + first-run wizard | ✅ done | — |
 | M5 | Start-work (`s`) — headline feature | ✅ done | — |
-| M6 | Status writes | ▶ **next** | — |
-| M7 | Open in browser + poll + polish | ☐ todo | — |
+| M6 | Status writes | ✅ done | — |
+| M7 | Open in browser + poll + polish | ▶ **next** | — |
 
 _First usable as the real tmux tool at **M4** (unhardcodes the board); does the headline start-work flow at **M5**._
 
@@ -153,7 +153,16 @@ _First usable as the real tmux tool at **M4** (unhardcodes the board); does the 
 - **Done when:** pressing `s` on a ticket clears the project's claude pane and kicks off the right skill,
   and is blocked with a warning when that session is busy.
 
-### M6 — Status writes  *(1–2 days)*
+### M6 — Status writes  *(1–2 days)* ✅
+> `gh/write.rs`: `status_field` (project id via `gh project view` + Status field/option ids via
+> `field-list`), `set_status` via `gh project item-edit --single-select-option-id`. `gh/scope.rs`:
+> parse `gh auth status` for the `project` scope; missing → a hint modal telling the user to run
+> `gh auth refresh -s project` (not auto-run from inside the TUI). `m` opens a status-picker modal;
+> selecting optimistically updates + re-sorts, fires the write in the background, and reverts on
+> failure. Auto-flip → In progress on start-work (best-effort, silent without the scope).
+> **Note:** the live `item-edit` mutation and optimistic-success reconcile weren't exercised (this
+> machine's token lacks `project` scope, and a live write would mutate a real board); the read-side
+> (id resolution, scope guard, mover UI) and the revert logic are verified.
 - `gh/scope.rs`: on first write, check token scopes; if `project` missing, run
   `gh auth refresh -s project` (one-time, on the main token — no separate token).
 - `gh/write.rs`: move a card's Status field via `gh api graphql` (Projects v2 is GraphQL-only).

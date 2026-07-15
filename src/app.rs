@@ -24,11 +24,14 @@ pub enum InputMode {
     Filter,
 }
 
-/// A modal overlay for the start-work flow (M5). Captures all input while open.
+/// A modal overlay (start-work confirm, status mover, messages). Captures all
+/// input while open.
 pub enum Modal {
     None,
     /// Awaiting y/n before driving the claude pane.
-    Confirm { issue: u64, skill: String, session: String },
+    Confirm { item_id: String, issue: u64, skill: String, session: String },
+    /// Status column picker (M6). `selected` indexes `options`.
+    StatusMove { item_id: String, options: Vec<String>, selected: usize },
     /// A warning or result line; any key dismisses it.
     Message(String),
 }
@@ -53,6 +56,10 @@ pub struct App {
     pub detail: DetailState,
     pub detail_cache: HashMap<String, IssueDetail>,
     pub modal: Modal,
+    /// Board Status field (ids + options), fetched lazily on the first write.
+    pub status_field: Option<crate::gh::write::StatusField>,
+    /// Whether the token has the `project` write scope; checked once.
+    pub project_scope: Option<bool>,
 }
 
 impl App {
@@ -68,6 +75,8 @@ impl App {
             detail: DetailState::Empty,
             detail_cache: HashMap::new(),
             modal: Modal::None,
+            status_field: None,
+            project_scope: None,
         };
         app.recompute(None);
         app
@@ -193,5 +202,80 @@ impl App {
         let keep = self.selected_id();
         self.filter_query.pop();
         self.recompute(keep);
+    }
+
+    // --- status mover (M6) ---
+
+    /// Move the highlighted option in an open `StatusMove` modal by `delta`.
+    pub fn modal_move(&mut self, delta: isize) {
+        if let Modal::StatusMove { options, selected, .. } = &mut self.modal
+            && !options.is_empty()
+        {
+            let next = (*selected as isize + delta).clamp(0, options.len() as isize - 1) as usize;
+            *selected = next;
+        }
+    }
+
+    /// The (item id, chosen status) of an open `StatusMove` modal, if any.
+    pub fn modal_status_pick(&self) -> Option<(String, String)> {
+        match &self.modal {
+            Modal::StatusMove { item_id, options, selected } => {
+                options.get(*selected).map(|s| (item_id.clone(), s.clone()))
+            }
+            _ => None,
+        }
+    }
+
+    /// Set an item's status in place (optimistic update) and re-sort the view,
+    /// keeping it selected. Returns the previous status for revert-on-failure.
+    pub fn set_item_status(&mut self, item_id: &str, status: Option<String>) -> Option<String> {
+        let item = self.items.iter_mut().find(|i| i.id == item_id)?;
+        let old = item.status.take();
+        item.status = status;
+        self.recompute(Some(item_id.to_string()));
+        old
+    }
+
+    /// The current status of an item, by id.
+    pub fn item_status(&self, item_id: &str) -> Option<String> {
+        self.items.iter().find(|i| i.id == item_id).and_then(|i| i.status.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::schema::ProjectConfig;
+    use crate::model::Item;
+
+    fn item(id: &str, status: &str) -> Item {
+        Item {
+            id: id.into(),
+            number: Some(1),
+            title: format!("t{id}"),
+            repository: Some("o/r".into()),
+            status: Some(status.into()),
+            labels: vec![],
+            assignees: vec![],
+            url: None,
+        }
+    }
+
+    #[test]
+    fn optimistic_status_update_and_revert() {
+        let items = vec![item("a", "Refine"), item("b", "In progress")];
+        let mut app = App::new(items, ProjectConfig::travel_smart());
+
+        // Optimistic move returns the previous status for revert.
+        let old = app.set_item_status("a", Some("Done".into()));
+        assert_eq!(old.as_deref(), Some("Refine"));
+        assert_eq!(app.item_status("a").as_deref(), Some("Done"));
+
+        // Reconcile-on-failure restores it.
+        app.set_item_status("a", old);
+        assert_eq!(app.item_status("a").as_deref(), Some("Refine"));
+
+        // Unknown ids are a no-op, not a panic.
+        assert_eq!(app.set_item_status("missing", Some("x".into())), None);
     }
 }
