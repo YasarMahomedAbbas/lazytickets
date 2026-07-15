@@ -11,8 +11,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::sync::mpsc;
 
-/// A completed detail fetch, tagged with the selection generation it was for.
-type DetailMsg = (u64, anyhow::Result<gh::issue::IssueDetail>);
+/// A completed detail fetch: the selection generation it was for, the item id it
+/// belongs to (for the cache), and the result.
+type DetailMsg = (u64, String, anyhow::Result<gh::issue::IssueDetail>);
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -67,14 +68,19 @@ async fn run(terminal: &mut DefaultTerminal, app: &mut App) -> anyhow::Result<()
                 }
             }
             maybe_detail = detail_rx.recv() => {
-                // Apply only if this result is still for the current selection.
-                if let Some((g, res)) = maybe_detail
-                    && g == generation.load(Ordering::SeqCst)
-                {
-                    app.detail = match res {
-                        Ok(d) => DetailState::Loaded(d),
-                        Err(e) => DetailState::Error(e.to_string()),
-                    };
+                if let Some((g, id, res)) = maybe_detail {
+                    // Cache successful fetches even if the selection has moved on —
+                    // the work is done, so a later revisit should still be instant.
+                    if let Ok(d) = &res {
+                        app.detail_cache.insert(id, d.clone());
+                    }
+                    // But only paint it if it's still the current selection.
+                    if g == generation.load(Ordering::SeqCst) {
+                        app.detail = match res {
+                            Ok(d) => DetailState::Loaded(d),
+                            Err(e) => DetailState::Error(e.to_string()),
+                        };
+                    }
                 }
             }
         }
@@ -89,18 +95,24 @@ fn schedule_detail(app: &mut App, generation: &Arc<AtomicU64>, detail_tx: &mpsc:
     let g = generation.fetch_add(1, Ordering::SeqCst) + 1;
 
     // Extract what we need, dropping the borrow before mutating app.detail.
-    let target = app.selected().map(|i| (i.number, i.repository.clone()));
-    let (number, repo) = match target {
+    let target = app.selected().map(|i| (i.id.clone(), i.number, i.repository.clone()));
+    let (id, number, repo) = match target {
         None => {
             app.detail = DetailState::Empty;
             return;
         }
-        Some((Some(number), Some(repo))) => (number, repo),
+        Some((id, Some(number), Some(repo))) => (id, number, repo),
         Some(_) => {
             app.detail = DetailState::Draft; // draft item: nothing to fetch
             return;
         }
     };
+
+    // Cache hit: paint instantly, no fetch, no "Loading…".
+    if let Some(cached) = app.detail_cache.get(&id) {
+        app.detail = DetailState::Loaded(cached.clone());
+        return;
+    }
 
     app.detail = DetailState::Loading;
     let generation = Arc::clone(generation);
@@ -111,6 +123,6 @@ fn schedule_detail(app: &mut App, generation: &Arc<AtomicU64>, detail_tx: &mpsc:
             return; // superseded during the settle window — skip the call entirely
         }
         let res = gh::issue::view(&repo, number).await;
-        let _ = tx.send((g, res));
+        let _ = tx.send((g, id, res));
     });
 }

@@ -3,6 +3,7 @@
 use crate::gh::issue::IssueDetail;
 use crate::model::Item;
 use ratatui::widgets::ListState;
+use std::collections::HashMap;
 
 /// State of the right-hand detail pane for the current selection.
 pub enum DetailState {
@@ -22,6 +23,9 @@ pub struct App {
     /// Human label for the active board, shown in the list title.
     pub board_label: String,
     pub detail: DetailState,
+    /// Session cache of fetched details, keyed by item id (`PVTI_…`). Revisiting a
+    /// ticket is instant and fires no `gh` call. Invalidated by the M7 poll / `r`.
+    pub detail_cache: HashMap<String, IssueDetail>,
 }
 
 impl App {
@@ -35,6 +39,7 @@ impl App {
             list_state,
             board_label,
             detail: DetailState::Empty,
+            detail_cache: HashMap::new(),
         }
     }
 
