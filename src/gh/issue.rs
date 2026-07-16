@@ -6,7 +6,7 @@
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct IssueDetail {
     pub title: String,
     pub body: String,
@@ -17,7 +17,7 @@ pub struct IssueDetail {
     pub comments: Vec<Comment>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Comment {
     pub author: String,
     pub body: String,

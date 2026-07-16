@@ -1,4 +1,5 @@
 mod app;
+mod cache;
 mod config;
 mod gh;
 mod model;
@@ -9,6 +10,7 @@ mod ui;
 use app::{App, DetailState, InputMode, Modal};
 use config::Config;
 use config::resolver::{self, Resolution};
+use model::Item;
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use std::sync::Arc;
@@ -25,11 +27,71 @@ type DetailMsg = (u64, String, anyhow::Result<gh::issue::IssueDetail>);
 type WriteMsg = (String, Option<String>, anyhow::Result<()>);
 
 /// Shown when a status write is attempted without the `project` token scope.
-const SCOPE_HINT: &str =
-    "Status writes need the 'project' scope. Quit and run:\n  gh auth refresh -s project\nthen relaunch.";
+const SCOPE_HINT: &str = "Status writes need the 'project' scope. Quit and run:\n  gh auth refresh -s project\nthen relaunch.";
+
+/// Fail fast, with a plain-terminal message, when a runtime dependency is
+/// missing — far friendlier than the first `gh`/`tmux` spawn erroring mid-TUI.
+/// `gh` is required to load any board; `tmux` only for the start-work flow, so a
+/// missing `tmux` is a warning, not a hard stop.
+fn preflight() -> anyhow::Result<()> {
+    let present = |bin: &str| {
+        std::process::Command::new(bin)
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok()
+    };
+
+    if !present("gh") {
+        anyhow::bail!(
+            "`gh` (the GitHub CLI) was not found on PATH.\n\
+             lazytickets needs it to read your board. Install it from https://cli.github.com \
+             and run `gh auth login`, then relaunch."
+        );
+    }
+    if !present("tmux") {
+        eprintln!(
+            "warning: `tmux` not found on PATH — the start-work flow (`s`) is unavailable until it is installed."
+        );
+    }
+    Ok(())
+}
+
+/// Handle the trivial informational flags before spinning up tokio/the terminal.
+/// Returns true if we printed something and `main` should exit. The app takes no
+/// other arguments — it resolves the board from the current directory.
+fn handle_flags() -> bool {
+    for arg in std::env::args().skip(1) {
+        match arg.as_str() {
+            "-V" | "--version" => {
+                println!("lazytickets {}", env!("CARGO_PKG_VERSION"));
+                return true;
+            }
+            "-h" | "--help" => {
+                println!(
+                    "lazytickets {} — a TUI for GitHub Projects v2 boards.\n\n\
+                     Usage: lazytickets\n\n\
+                     Run inside a tmux session, from within a git repo whose remote maps to a\n\
+                     configured board. Press `?` in the app for keybindings.\n\n\
+                     Requires `gh` (authenticated) and `tmux` on PATH.",
+                    env!("CARGO_PKG_VERSION")
+                );
+                return true;
+            }
+            _ => {}
+        }
+    }
+    false
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    if handle_flags() {
+        return Ok(());
+    }
+    preflight()?;
+
     // Resolve the current repo → its board (config), before touching the terminal.
     let config = Config::load()?;
     let cwd = std::env::current_dir()?;
@@ -40,7 +102,16 @@ async fn main() -> anyhow::Result<()> {
     // Known repo → open directly; unknown → the first-run wizard writes a config.
     let cfg = match resolution {
         Resolution::Project(p) => *p,
-        Resolution::Unknown { repo } => match config::wizard::run(&mut terminal, repo, &cwd, config, true, config::wizard::Input::Terminal).await {
+        Resolution::Unknown { repo } => match config::wizard::run(
+            &mut terminal,
+            repo,
+            &cwd,
+            config,
+            true,
+            config::wizard::Input::Terminal,
+        )
+        .await
+        {
             Ok(p) => p,
             Err(e) => {
                 ratatui::restore();
@@ -49,7 +120,7 @@ async fn main() -> anyhow::Result<()> {
         },
     };
 
-    let result = match gh::project::item_list(&cfg.board.owner, cfg.board.number).await {
+    let result = match load_board(&cfg.board.owner, cfg.board.number).await {
         Ok(items) => {
             let mut app = App::new(items, cfg);
             run(&mut terminal, &mut app).await
@@ -58,6 +129,29 @@ async fn main() -> anyhow::Result<()> {
     };
     ratatui::restore();
     result
+}
+
+/// Load a board for display, minimising API traffic: serve a fresh-enough disk
+/// snapshot without touching the network, otherwise fetch and re-cache it. If the
+/// fetch fails but *any* cached snapshot exists (even stale), fall back to it — so
+/// a rate-limited launch still shows the last-known board instead of an error.
+async fn load_board(owner: &str, number: u32) -> anyhow::Result<Vec<Item>> {
+    let cached = cache::load_board(owner, number);
+    if let Some(c) = &cached
+        && c.age() < cache::BOARD_TTL
+    {
+        return Ok(c.value.clone());
+    }
+    match gh::project::item_list(owner, number).await {
+        Ok(items) => {
+            cache::save_board(owner, number, &items);
+            Ok(items)
+        }
+        Err(e) => match cached {
+            Some(c) => Ok(c.value),
+            None => Err(e),
+        },
+    }
 }
 
 async fn run(terminal: &mut DefaultTerminal, app: &mut App) -> anyhow::Result<()> {
@@ -84,8 +178,11 @@ async fn run(terminal: &mut DefaultTerminal, app: &mut App) -> anyhow::Result<()
     // `r` force-refresh, both delivering fresh snapshots on the same channel.
     // The handle is re-targeted when the user switches projects (`p`).
     let (poll_tx, mut poll_rx) = mpsc::unbounded_channel::<poll::Snapshot>();
-    let mut poll_handle =
-        poll::spawn(app.config.board.owner.clone(), app.config.board.number, poll_tx.clone());
+    let mut poll_handle = poll::spawn(
+        app.config.board.owner.clone(),
+        app.config.board.number,
+        poll_tx.clone(),
+    );
 
     loop {
         terminal.draw(|frame| ui::render(frame, app))?;
@@ -213,10 +310,16 @@ async fn run(terminal: &mut DefaultTerminal, app: &mut App) -> anyhow::Result<()
 
 /// Bump the generation, set the pane to Loading (or serve from cache), and spawn
 /// a debounced fetch for the current selection. Stale fetches are discarded.
-fn schedule_detail(app: &mut App, generation: &Arc<AtomicU64>, detail_tx: &mpsc::UnboundedSender<DetailMsg>) {
+fn schedule_detail(
+    app: &mut App,
+    generation: &Arc<AtomicU64>,
+    detail_tx: &mpsc::UnboundedSender<DetailMsg>,
+) {
     let g = generation.fetch_add(1, Ordering::SeqCst) + 1;
 
-    let target = app.selected().map(|i| (i.id.clone(), i.number, i.repository.clone()));
+    let target = app
+        .selected()
+        .map(|i| (i.id.clone(), i.number, i.repository.clone()));
     let (id, number, repo) = match target {
         None => {
             app.detail = DetailState::Empty;
@@ -234,6 +337,15 @@ fn schedule_detail(app: &mut App, generation: &Arc<AtomicU64>, detail_tx: &mpsc:
         return;
     }
 
+    // Seed from the on-disk cache before hitting the API on a fresh launch.
+    if let Some(c) = cache::load_detail(&repo, number)
+        && c.age() < cache::DETAIL_TTL
+    {
+        app.detail_cache.insert(id.clone(), c.value.clone());
+        app.detail = DetailState::Loaded(c.value);
+        return;
+    }
+
     app.detail = DetailState::Loading;
     let generation = Arc::clone(generation);
     let tx = detail_tx.clone();
@@ -243,6 +355,9 @@ fn schedule_detail(app: &mut App, generation: &Arc<AtomicU64>, detail_tx: &mpsc:
             return; // superseded during the settle window
         }
         let res = gh::issue::view(&repo, number).await;
+        if let Ok(d) = &res {
+            cache::save_detail(&repo, number, d);
+        }
         let _ = tx.send((g, id, res));
     });
 }
@@ -269,7 +384,9 @@ async fn begin_start_work(app: &mut App) {
     let session = match tmux::current_session().await {
         Ok(Some(s)) => s,
         Ok(None) => {
-            app.modal = Modal::Message("Not inside tmux — start-work drives the project's tmux session.".into());
+            app.modal = Modal::Message(
+                "Not inside tmux — start-work drives the project's tmux session.".into(),
+            );
             return;
         }
         Err(e) => {
@@ -281,7 +398,9 @@ async fn begin_start_work(app: &mut App) {
     match tmux::has_claude_window(&session).await {
         Ok(true) => {}
         Ok(false) => {
-            app.modal = Modal::Message(format!("Session '{session}' has no 'claude' window to drive."));
+            app.modal = Modal::Message(format!(
+                "Session '{session}' has no 'claude' window to drive."
+            ));
             return;
         }
         Err(e) => {
@@ -304,21 +423,39 @@ async fn begin_start_work(app: &mut App) {
         }
     }
 
-    app.modal = Modal::Confirm { item_id, issue, skill, session };
+    app.modal = Modal::Confirm {
+        item_id,
+        issue,
+        skill,
+        session,
+    };
 }
 
 /// Drive the confirmed start: `/clear` the claude pane, invoke the skill, then
 /// best-effort auto-flip the card to In progress.
 async fn confirm_start_work(app: &mut App, write_tx: &mpsc::UnboundedSender<WriteMsg>) {
-    let Modal::Confirm { item_id, issue, skill, session } = &app.modal else {
+    let Modal::Confirm {
+        item_id,
+        issue,
+        skill,
+        session,
+    } = &app.modal
+    else {
         return;
     };
-    let (item_id, issue, skill, session) = (item_id.clone(), *issue, skill.clone(), session.clone());
+    let (item_id, issue, skill, session) =
+        (item_id.clone(), *issue, skill.clone(), session.clone());
     app.modal = match tmux::start_work(&session, &skill, issue).await {
         Ok(()) => {
             let flipped = try_auto_flip(app, &item_id, write_tx).await;
-            let note = if flipped { " · moved to In progress" } else { "" };
-            Modal::Message(format!("Started #{issue} with '{skill}' in {session}:claude.{note}"))
+            let note = if flipped {
+                " · moved to In progress"
+            } else {
+                ""
+            };
+            Modal::Message(format!(
+                "Started #{issue} with '{skill}' in {session}:claude.{note}"
+            ))
         }
         Err(e) => Modal::Message(format!("Start-work failed: {e}")),
     };
@@ -350,7 +487,10 @@ fn open_project_picker(app: &mut App) {
         }
     };
     let names: Vec<String> = cfg.projects.iter().map(|p| p.name.clone()).collect();
-    let selected = names.iter().position(|n| *n == app.config.name).unwrap_or(0);
+    let selected = names
+        .iter()
+        .position(|n| *n == app.config.name)
+        .unwrap_or(0);
     app.modal = Modal::ProjectPick { names, selected };
 }
 
@@ -408,8 +548,15 @@ async fn add_board(
     // The wizard takes over the whole screen and writes the new project to disk.
     // Any error (cancel / no remote — it shows its own message) just returns us
     // to the current board.
-    if let Ok(project) =
-        config::wizard::run(terminal, repo, &cwd, cfg, false, config::wizard::Input::Channel(input_rx)).await
+    if let Ok(project) = config::wizard::run(
+        terminal,
+        repo,
+        &cwd,
+        cfg,
+        false,
+        config::wizard::Input::Channel(input_rx),
+    )
+    .await
     {
         load_board_into(terminal, app, project, poll_handle, poll_tx).await;
     }
@@ -425,9 +572,12 @@ async fn load_board_into(
 ) {
     let _ = terminal.draw(|f| {
         ui::render(f, app);
-        ui::modal::render_notice(f, &format!("Loading {} #{}…", project.name, project.board.number));
+        ui::modal::render_notice(
+            f,
+            &format!("Loading {} #{}…", project.name, project.board.number),
+        );
     });
-    match gh::project::item_list(&project.board.owner, project.board.number).await {
+    match load_board(&project.board.owner, project.board.number).await {
         Ok(items) => {
             let (owner, number) = (project.board.owner.clone(), project.board.number);
             app.switch_board(project, items);
@@ -452,7 +602,11 @@ async fn open_status_mover(app: &mut App) {
         .item_status(&item_id)
         .and_then(|cur| options.iter().position(|o| o.eq_ignore_ascii_case(&cur)))
         .unwrap_or(0);
-    app.modal = Modal::StatusMove { item_id, options, selected };
+    app.modal = Modal::StatusMove {
+        item_id,
+        options,
+        selected,
+    };
 }
 
 /// Apply a manual status move: check scope, optimistically update, and fire the
@@ -483,9 +637,17 @@ async fn begin_status_move(
 
 /// After a successful start, move the card to In progress if it isn't already —
 /// silent best-effort (skipped without the write scope). Returns whether it fired.
-async fn try_auto_flip(app: &mut App, item_id: &str, write_tx: &mpsc::UnboundedSender<WriteMsg>) -> bool {
+async fn try_auto_flip(
+    app: &mut App,
+    item_id: &str,
+    write_tx: &mpsc::UnboundedSender<WriteMsg>,
+) -> bool {
     const TARGET: &str = "In progress";
-    if app.item_status(item_id).as_deref().is_some_and(|s| s.eq_ignore_ascii_case(TARGET)) {
+    if app
+        .item_status(item_id)
+        .as_deref()
+        .is_some_and(|s| s.eq_ignore_ascii_case(TARGET))
+    {
         return false;
     }
     if !ensure_scope(app).await {

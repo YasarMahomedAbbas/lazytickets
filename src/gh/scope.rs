@@ -26,7 +26,12 @@ fn scopes(text: &str) -> Vec<String> {
     for line in text.lines() {
         if line.contains("Token scopes") {
             // Tokens are single-quoted: 'gist', 'read:project', 'project', …
-            return line.split('\'').skip(1).step_by(2).map(str::to_string).collect();
+            return line
+                .split('\'')
+                .skip(1)
+                .step_by(2)
+                .map(str::to_string)
+                .collect();
         }
     }
     Vec::new()

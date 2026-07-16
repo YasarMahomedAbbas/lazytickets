@@ -12,7 +12,11 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     // tabs (1) · list (rest) · filter line (1, only while filtering or with a query)
     let show_filter = app.input_mode == InputMode::Filter || !app.filter_query.is_empty();
     let constraints = if show_filter {
-        vec![Constraint::Length(1), Constraint::Min(1), Constraint::Length(1)]
+        vec![
+            Constraint::Length(1),
+            Constraint::Min(1),
+            Constraint::Length(1),
+        ]
     } else {
         vec![Constraint::Length(1), Constraint::Min(1)]
     };
@@ -32,7 +36,9 @@ fn render_tabs(frame: &mut Frame, area: Rect, app: &App) {
             spans.push(Span::styled(" · ", Style::default().fg(NORD_DIM)));
         }
         let style = if i == app.active_preset {
-            Style::default().fg(NORD_CYAN).add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+            Style::default()
+                .fg(NORD_CYAN)
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
         } else {
             Style::default().fg(NORD_DIM)
         };
@@ -49,9 +55,15 @@ fn render_list(frame: &mut Frame, area: Rect, app: &mut App) {
             let it = &app.items[i];
             let status = it.status.as_deref().unwrap_or("");
             let line = Line::from(vec![
-                Span::styled(format!("{:>5} ", it.number_label()), Style::default().fg(NORD_DIM)),
+                Span::styled(
+                    format!("{:>5} ", it.number_label()),
+                    Style::default().fg(NORD_DIM),
+                ),
                 Span::raw(it.title.clone()),
-                Span::styled(format!("  {status}"), Style::default().fg(status_color(status))),
+                Span::styled(
+                    format!("  {status}"),
+                    Style::default().fg(status_color(status)),
+                ),
             ]);
             ListItem::new(line)
         })
@@ -80,7 +92,10 @@ fn render_filter(frame: &mut Frame, area: Rect, app: &App) {
     } else {
         Span::styled("  (Esc clears)", Style::default().fg(NORD_DIM))
     };
-    frame.render_widget(Paragraph::new(Line::from(vec![prompt, query, cursor])), area);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![prompt, query, cursor])),
+        area,
+    );
 }
 
 /// Amber for actively-worked columns, dim otherwise.

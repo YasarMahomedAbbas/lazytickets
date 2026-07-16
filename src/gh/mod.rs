@@ -25,8 +25,40 @@ pub async fn run(args: &[&str]) -> Result<Vec<u8>> {
     Ok(output.stdout)
 }
 
+/// Whether an error from `run` is GitHub refusing us for rate reasons. The
+/// poller uses this to back off instead of retrying on schedule — continued
+/// requests during a (secondary) rate-limit only extend its window.
+pub fn is_rate_limit(err: &anyhow::Error) -> bool {
+    let msg = err.to_string().to_ascii_lowercase();
+    msg.contains("rate limit") || msg.contains("abuse detection")
+}
+
 /// The authenticated user's login, for seeding the `mine` preset in the wizard.
 pub async fn viewer_login() -> Result<String> {
     let bytes = run(&["api", "user", "--jq", ".login"]).await?;
     Ok(String::from_utf8_lossy(&bytes).trim().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classifies_rate_limit_errors() {
+        // The shape `run` produces on a limited board.
+        let e = anyhow::anyhow!(
+            "`gh project item-list 3` failed: GraphQL: API rate limit exceeded for user ID 11193066"
+        );
+        assert!(is_rate_limit(&e));
+        assert!(is_rate_limit(&anyhow::anyhow!(
+            "You have exceeded a secondary rate limit"
+        )));
+        assert!(is_rate_limit(&anyhow::anyhow!(
+            "triggered an abuse detection mechanism"
+        )));
+        // Unrelated failures must not be mistaken for a limit (they retry normally).
+        assert!(!is_rate_limit(&anyhow::anyhow!(
+            "could not resolve host github.com"
+        )));
+    }
 }

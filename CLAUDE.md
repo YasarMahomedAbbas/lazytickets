@@ -49,9 +49,22 @@ and `ui/` only renders it (`ui::render(frame, app)` is pure over `&App`).
 - **Status writes** — optimistic: `app.set_item_status` mutates in-memory state and
   re-sorts immediately, the `gh` write fires in the background, and a failure reverts and
   shows a Message modal.
-- **Poll** — `poll.rs` re-fetches the board every ~45s off the UI thread; the loop adopts
+- **Poll** — `poll.rs` re-fetches the board every ~30min off the UI thread; the loop adopts
   a snapshot only when it differs (`Item: PartialEq`), preserving selection. The `r`
-  force-refresh shares this same channel (`poll::refresh_now`).
+  force-refresh shares this same channel (`poll::refresh_now`). The long cadence + backoff
+  keep us clear of the Projects v2 GraphQL budget — see Caching below.
+
+### Caching (`cache.rs`)
+
+Projects v2 is GraphQL (point-expensive, **no** ETag/conditional requests), so the only
+levers on API traffic are *fetch less* and *reuse across restarts*. `cache.rs` persists the
+last board snapshot per `(owner, number)` and each fetched issue detail under the XDG cache
+dir, each stamped with a fetch time. On launch/board-switch, `main::load_board` serves a
+fresh-enough snapshot with **zero** API calls and falls back to a stale one if the fetch
+fails (a rate-limited launch still shows the board). `schedule_detail` seeds `detail_cache`
+from disk before hitting the API. When `gh::project::item_list` is refused for rate reasons
+(`gh::is_rate_limit`), the poller backs off exponentially instead of retrying on schedule —
+continued requests during a secondary limit only extend its window.
 
 ### Resolution & config (`config/`)
 

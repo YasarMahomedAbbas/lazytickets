@@ -29,12 +29,24 @@ pub enum InputMode {
 pub enum Modal {
     None,
     /// Awaiting y/n before driving the claude pane.
-    Confirm { item_id: String, issue: u64, skill: String, session: String },
+    Confirm {
+        item_id: String,
+        issue: u64,
+        skill: String,
+        session: String,
+    },
     /// Status column picker (M6). `selected` indexes `options`.
-    StatusMove { item_id: String, options: Vec<String>, selected: usize },
+    StatusMove {
+        item_id: String,
+        options: Vec<String>,
+        selected: usize,
+    },
     /// Project switcher. `names` are the configured project names; `selected`
     /// ranges over `0..=names.len()`, where the trailing index is "Add a board…".
-    ProjectPick { names: Vec<String>, selected: usize },
+    ProjectPick {
+        names: Vec<String>,
+        selected: usize,
+    },
     /// Keybindings overlay (M7); any key dismisses.
     Help,
     /// A warning or result line; any key dismisses it.
@@ -231,8 +243,11 @@ impl App {
     /// `ProjectPick`) by `delta`.
     pub fn modal_move(&mut self, delta: isize) {
         match &mut self.modal {
-            Modal::StatusMove { options, selected, .. } if !options.is_empty() => {
-                let next = (*selected as isize + delta).clamp(0, options.len() as isize - 1) as usize;
+            Modal::StatusMove {
+                options, selected, ..
+            } if !options.is_empty() => {
+                let next =
+                    (*selected as isize + delta).clamp(0, options.len() as isize - 1) as usize;
                 *selected = next;
             }
             Modal::ProjectPick { names, selected } => {
@@ -247,9 +262,11 @@ impl App {
     /// The (item id, chosen status) of an open `StatusMove` modal, if any.
     pub fn modal_status_pick(&self) -> Option<(String, String)> {
         match &self.modal {
-            Modal::StatusMove { item_id, options, selected } => {
-                options.get(*selected).map(|s| (item_id.clone(), s.clone()))
-            }
+            Modal::StatusMove {
+                item_id,
+                options,
+                selected,
+            } => options.get(*selected).map(|s| (item_id.clone(), s.clone())),
             _ => None,
         }
     }
@@ -266,7 +283,10 @@ impl App {
 
     /// The current status of an item, by id.
     pub fn item_status(&self, item_id: &str) -> Option<String> {
-        self.items.iter().find(|i| i.id == item_id).and_then(|i| i.status.clone())
+        self.items
+            .iter()
+            .find(|i| i.id == item_id)
+            .and_then(|i| i.status.clone())
     }
 }
 
@@ -311,7 +331,10 @@ mod tests {
     fn project_pick_navigation_includes_add_row() {
         let mut app = App::new(vec![item("a", "Refine")], ProjectConfig::travel_smart());
         // Two projects → rows are [p0, p1, "Add a board…"], so the last index is 2.
-        app.modal = Modal::ProjectPick { names: vec!["p0".into(), "p1".into()], selected: 0 };
+        app.modal = Modal::ProjectPick {
+            names: vec!["p0".into(), "p1".into()],
+            selected: 0,
+        };
 
         app.modal_move(1);
         app.modal_move(1);
@@ -332,7 +355,8 @@ mod tests {
         let mut app = App::new(vec![item("a", "Refine")], ProjectConfig::travel_smart());
         app.filter_query = "x".into();
         app.active_preset = 1;
-        app.detail_cache.insert("stale".into(), unreachable_detail());
+        app.detail_cache
+            .insert("stale".into(), unreachable_detail());
 
         let mut other = ProjectConfig::travel_smart();
         other.name = "other".into();
@@ -345,7 +369,10 @@ mod tests {
         assert!(app.detail_cache.is_empty());
         assert!(app.status_field.is_none());
         assert!(matches!(app.modal, Modal::None));
-        assert!(app.selected().is_some(), "a selection is restored on the new board");
+        assert!(
+            app.selected().is_some(),
+            "a selection is restored on the new board"
+        );
     }
 
     /// A throwaway `IssueDetail` for the cache-clearing assertion above.

@@ -10,7 +10,10 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
 pub fn render(frame: &mut Frame, modal: &Modal) {
     // The pickers render their own selectable lists; the rest are text popups.
-    if let Modal::StatusMove { options, selected, .. } = modal {
+    if let Modal::StatusMove {
+        options, selected, ..
+    } = modal
+    {
         render_mover(frame, options, *selected);
         return;
     }
@@ -24,14 +27,23 @@ pub fn render(frame: &mut Frame, modal: &Modal) {
     }
 
     let (title, body, border) = match modal {
-        Modal::Confirm { issue, skill, session, .. } => (
+        Modal::Confirm {
+            issue,
+            skill,
+            session,
+            ..
+        } => (
             " Start work ",
             format!(
                 "Start #{issue} with the '{skill}' skill\nin {session}:claude?\n\nThis clears the Claude pane first.\n\n[y] start    [n] cancel"
             ),
             NORD_CYAN,
         ),
-        Modal::Message(msg) => (" lazytickets ", format!("{msg}\n\n[any key] dismiss"), NORD_AMBER),
+        Modal::Message(msg) => (
+            " lazytickets ",
+            format!("{msg}\n\n[any key] dismiss"),
+            NORD_AMBER,
+        ),
         Modal::StatusMove { .. } | Modal::ProjectPick { .. } | Modal::Help | Modal::None => return,
     };
 
@@ -54,14 +66,20 @@ fn render_mover(frame: &mut Frame, options: &[String], selected: usize) {
         .enumerate()
         .map(|(i, name)| {
             if i == selected {
-                Line::styled(format!("▶ {name}"), Style::default().add_modifier(Modifier::REVERSED))
+                Line::styled(
+                    format!("▶ {name}"),
+                    Style::default().add_modifier(Modifier::REVERSED),
+                )
             } else {
                 Line::raw(format!("  {name}"))
             }
         })
         .collect();
     lines.push(Line::raw(""));
-    lines.push(Line::styled("j/k move · Enter set · Esc cancel", Style::default().fg(NORD_AMBER)));
+    lines.push(Line::styled(
+        "j/k move · Enter set · Esc cancel",
+        Style::default().fg(NORD_AMBER),
+    ));
 
     let height = (lines.len() as u16 + 2).min(frame.area().height);
     let area = centered(50, height, frame.area());
@@ -88,14 +106,20 @@ fn render_project_pick(frame: &mut Frame, names: &[String], selected: usize) {
         .enumerate()
         .map(|(i, name)| {
             if i == selected {
-                Line::styled(format!("▶ {name}"), Style::default().add_modifier(Modifier::REVERSED))
+                Line::styled(
+                    format!("▶ {name}"),
+                    Style::default().add_modifier(Modifier::REVERSED),
+                )
             } else {
                 Line::raw(format!("  {name}"))
             }
         })
         .collect();
     lines.push(Line::raw(""));
-    lines.push(Line::styled("j/k move · Enter open · Esc cancel", Style::default().fg(NORD_AMBER)));
+    lines.push(Line::styled(
+        "j/k move · Enter open · Esc cancel",
+        Style::default().fg(NORD_AMBER),
+    ));
 
     let height = (lines.len() as u16 + 2).min(frame.area().height);
     let area = centered(50, height, frame.area());
@@ -150,7 +174,10 @@ fn render_help(frame: &mut Frame) {
         })
         .collect();
     lines.push(Line::raw(""));
-    lines.push(Line::styled("[any key] dismiss", Style::default().fg(NORD_AMBER)));
+    lines.push(Line::styled(
+        "[any key] dismiss",
+        Style::default().fg(NORD_AMBER),
+    ));
 
     let height = (lines.len() as u16 + 2).min(frame.area().height);
     let area = centered(60, height, frame.area());

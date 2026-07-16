@@ -81,22 +81,25 @@ impl Filter {
 
     pub fn matches(&self, item: &Item) -> bool {
         let labels_ok = self.labels.is_empty()
-            || self
-                .labels
-                .iter()
-                .any(|want| item.labels.iter().any(|have| have.eq_ignore_ascii_case(want)));
+            || self.labels.iter().any(|want| {
+                item.labels
+                    .iter()
+                    .any(|have| have.eq_ignore_ascii_case(want))
+            });
 
         let status_ok = self.statuses.is_empty()
-            || item
-                .status
-                .as_deref()
-                .is_some_and(|s| self.statuses.iter().any(|want| want.eq_ignore_ascii_case(s)));
+            || item.status.as_deref().is_some_and(|s| {
+                self.statuses
+                    .iter()
+                    .any(|want| want.eq_ignore_ascii_case(s))
+            });
 
         let assignees_ok = self.assignees.is_empty()
-            || self
-                .assignees
-                .iter()
-                .any(|want| item.assignees.iter().any(|have| have.eq_ignore_ascii_case(want)));
+            || self.assignees.iter().any(|want| {
+                item.assignees
+                    .iter()
+                    .any(|have| have.eq_ignore_ascii_case(want))
+            });
 
         labels_ok && status_ok && assignees_ok
     }
@@ -123,8 +126,15 @@ impl ProjectConfig {
             return false;
         }
         if let Some(status) = item.status.as_deref() {
-            let excluded = self.exclude_statuses.iter().any(|e| e.eq_ignore_ascii_case(status));
-            let preset_wants = preset.include.statuses.iter().any(|s| s.eq_ignore_ascii_case(status));
+            let excluded = self
+                .exclude_statuses
+                .iter()
+                .any(|e| e.eq_ignore_ascii_case(status));
+            let preset_wants = preset
+                .include
+                .statuses
+                .iter()
+                .any(|s| s.eq_ignore_ascii_case(status));
             if excluded && !preset_wants {
                 return false;
             }

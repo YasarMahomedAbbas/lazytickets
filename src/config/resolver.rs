@@ -127,15 +127,37 @@ mod tests {
     #[test]
     fn normalizes_remote_url_variants() {
         let cases = [
-            ("git@github.com:WhiteWolfStudio/travel-smart.git", "WhiteWolfStudio/travel-smart"),
-            ("git@github.com:WhiteWolfStudio/travel-smart", "WhiteWolfStudio/travel-smart"),
-            ("https://github.com/WhiteWolfStudio/travel-smart.git", "WhiteWolfStudio/travel-smart"),
-            ("https://github.com/WhiteWolfStudio/travel-smart", "WhiteWolfStudio/travel-smart"),
-            ("ssh://git@github.com/WhiteWolfStudio/travel-smart.git", "WhiteWolfStudio/travel-smart"),
-            ("https://github.com/YasarMahomedAbbas/lazytickets.git", "YasarMahomedAbbas/lazytickets"),
+            (
+                "git@github.com:WhiteWolfStudio/travel-smart.git",
+                "WhiteWolfStudio/travel-smart",
+            ),
+            (
+                "git@github.com:WhiteWolfStudio/travel-smart",
+                "WhiteWolfStudio/travel-smart",
+            ),
+            (
+                "https://github.com/WhiteWolfStudio/travel-smart.git",
+                "WhiteWolfStudio/travel-smart",
+            ),
+            (
+                "https://github.com/WhiteWolfStudio/travel-smart",
+                "WhiteWolfStudio/travel-smart",
+            ),
+            (
+                "ssh://git@github.com/WhiteWolfStudio/travel-smart.git",
+                "WhiteWolfStudio/travel-smart",
+            ),
+            (
+                "https://github.com/YasarMahomedAbbas/lazytickets.git",
+                "YasarMahomedAbbas/lazytickets",
+            ),
         ];
         for (input, expected) in cases {
-            assert_eq!(normalize_remote(input).as_deref(), Some(expected), "input: {input}");
+            assert_eq!(
+                normalize_remote(input).as_deref(),
+                Some(expected),
+                "input: {input}"
+            );
         }
     }
 
@@ -143,7 +165,9 @@ mod tests {
     /// are read for real. Robust to the exact owner/name via `discover`.
     fn discover() -> Option<String> {
         let cwd = std::env::current_dir().unwrap();
-        git_origin_url(&git_toplevel(&cwd)?).as_deref().and_then(normalize_remote)
+        git_origin_url(&git_toplevel(&cwd)?)
+            .as_deref()
+            .and_then(normalize_remote)
     }
 
     #[test]
@@ -176,7 +200,10 @@ mod tests {
         cfg.projects.push(ProjectConfig::travel_smart());
         cfg.projects[0].name = "override-target".into();
         cfg.projects[0].repos.clear();
-        cfg.overrides.insert(root.to_string_lossy().into_owned(), "override-target".into());
+        cfg.overrides.insert(
+            root.to_string_lossy().into_owned(),
+            "override-target".into(),
+        );
         match resolve(&cfg, &cwd) {
             Resolution::Project(p) => assert_eq!(p.name, "override-target"),
             _ => panic!("path override should resolve to the project"),

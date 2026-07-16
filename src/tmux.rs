@@ -33,7 +33,9 @@ pub async fn has_claude_window(session: &str) -> Result<bool> {
     if !out.status.success() {
         return Ok(false);
     }
-    Ok(String::from_utf8_lossy(&out.stdout).lines().any(|w| w == "claude"))
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .any(|w| w == "claude"))
 }
 
 /// Whether Claude is busy in `session`, using the same pane-ownership check as
@@ -57,7 +59,11 @@ pub async fn is_busy(session: &str) -> Result<bool> {
 pub async fn start_work(session: &str, skill: &str, issue: u64) -> Result<()> {
     let target = format!("{session}:claude");
     send_line(&target, "/clear").await?;
-    send_line(&target, &format!("Use the {skill} skill for issue #{issue}")).await?;
+    send_line(
+        &target,
+        &format!("Use the {skill} skill for issue #{issue}"),
+    )
+    .await?;
     Ok(())
 }
 
@@ -71,7 +77,11 @@ async fn send_line(target: &str, line: &str) -> Result<()> {
 async fn run_ok(args: &[&str]) -> Result<()> {
     let out = tmux(args).await?;
     if !out.status.success() {
-        anyhow::bail!("`tmux {}` failed: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim());
+        anyhow::bail!(
+            "`tmux {}` failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
     }
     Ok(())
 }

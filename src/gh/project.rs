@@ -33,7 +33,8 @@ struct RawContent {
 }
 
 fn parse(bytes: &[u8]) -> Result<Vec<Item>> {
-    let raw: RawList = serde_json::from_slice(bytes).context("parsing gh project item-list JSON")?;
+    let raw: RawList =
+        serde_json::from_slice(bytes).context("parsing gh project item-list JSON")?;
     Ok(raw
         .items
         .into_iter()
@@ -74,7 +75,8 @@ struct RawBoard {
 /// List the (open) Projects v2 boards owned by `owner`, for the first-run wizard.
 pub async fn list_boards(owner: &str) -> Result<Vec<BoardSummary>> {
     let bytes = super::run(&["project", "list", "--owner", owner, "--format", "json"]).await?;
-    let raw: RawBoardList = serde_json::from_slice(&bytes).context("parsing gh project list JSON")?;
+    let raw: RawBoardList =
+        serde_json::from_slice(&bytes).context("parsing gh project list JSON")?;
     Ok(raw
         .projects
         .into_iter()
@@ -118,7 +120,8 @@ pub async fn status_options(owner: &str, number: u32) -> Result<Vec<String>> {
         "json",
     ])
     .await?;
-    let raw: RawFieldList = serde_json::from_slice(&bytes).context("parsing gh project field-list JSON")?;
+    let raw: RawFieldList =
+        serde_json::from_slice(&bytes).context("parsing gh project field-list JSON")?;
     Ok(raw
         .fields
         .into_iter()

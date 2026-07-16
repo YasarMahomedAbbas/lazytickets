@@ -65,11 +65,25 @@ struct RawOption {
 pub async fn status_field(owner: &str, number: u32) -> Result<StatusField> {
     let num = number.to_string();
 
-    let view = super::run(&["project", "view", &num, "--owner", owner, "--format", "json"]).await?;
-    let project: RawProjectView = serde_json::from_slice(&view).context("parsing gh project view JSON")?;
+    let view = super::run(&[
+        "project", "view", &num, "--owner", owner, "--format", "json",
+    ])
+    .await?;
+    let project: RawProjectView =
+        serde_json::from_slice(&view).context("parsing gh project view JSON")?;
 
-    let fl = super::run(&["project", "field-list", &num, "--owner", owner, "--format", "json"]).await?;
-    let raw: RawFieldList = serde_json::from_slice(&fl).context("parsing gh project field-list JSON")?;
+    let fl = super::run(&[
+        "project",
+        "field-list",
+        &num,
+        "--owner",
+        owner,
+        "--format",
+        "json",
+    ])
+    .await?;
+    let raw: RawFieldList =
+        serde_json::from_slice(&fl).context("parsing gh project field-list JSON")?;
 
     let status = raw
         .fields
@@ -83,7 +97,10 @@ pub async fn status_field(owner: &str, number: u32) -> Result<StatusField> {
         options: status
             .options
             .into_iter()
-            .map(|o| StatusOption { id: o.id, name: o.name })
+            .map(|o| StatusOption {
+                id: o.id,
+                name: o.name,
+            })
             .collect(),
     })
 }

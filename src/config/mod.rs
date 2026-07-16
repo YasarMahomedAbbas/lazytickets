@@ -107,7 +107,13 @@ mod tests {
         assert_eq!(p.board.number, 6);
         assert_eq!(p.repos, vec!["WhiteWolfStudio/travel-smart".to_string()]);
         assert_eq!(p.skill.start.as_deref(), Some("frontend-start-ticket"));
-        assert_eq!(p.presets[1].include.assignees, vec!["YasarMahomedAbbas".to_string()]);
-        assert_eq!(back.overrides.get("/tmp/some-repo").map(String::as_str), Some("travel-smart"));
+        assert_eq!(
+            p.presets[1].include.assignees,
+            vec!["YasarMahomedAbbas".to_string()]
+        );
+        assert_eq!(
+            back.overrides.get("/tmp/some-repo").map(String::as_str),
+            Some("travel-smart")
+        );
     }
 }

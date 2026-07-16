@@ -41,13 +41,22 @@ fn loaded(frame: &mut Frame, area: Rect, d: &IssueDetail) {
     )));
 
     // state · labels
-    let mut meta = vec![Span::styled(d.state.clone(), Style::default().fg(NORD_AMBER))];
+    let mut meta = vec![Span::styled(
+        d.state.clone(),
+        Style::default().fg(NORD_AMBER),
+    )];
     if !d.labels.is_empty() {
         meta.push(Span::styled("  ", Style::default()));
-        meta.push(Span::styled(d.labels.join(", "), Style::default().fg(NORD_DIM)));
+        meta.push(Span::styled(
+            d.labels.join(", "),
+            Style::default().fg(NORD_DIM),
+        ));
     }
     lines.push(Line::from(meta));
-    lines.push(Line::from(Span::styled(d.url.clone(), Style::default().fg(NORD_DIM))));
+    lines.push(Line::from(Span::styled(
+        d.url.clone(),
+        Style::default().fg(NORD_DIM),
+    )));
     lines.push(Line::from(""));
 
     // body

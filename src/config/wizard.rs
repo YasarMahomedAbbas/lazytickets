@@ -36,9 +36,10 @@ impl Input<'_> {
         loop {
             let ev = match self {
                 Input::Terminal => tokio::task::spawn_blocking(event::read).await??,
-                Input::Channel(rx) => {
-                    rx.recv().await.ok_or_else(|| anyhow::anyhow!("input channel closed"))?
-                }
+                Input::Channel(rx) => rx
+                    .recv()
+                    .await
+                    .ok_or_else(|| anyhow::anyhow!("input channel closed"))?,
             };
             if let Event::Key(k) = ev
                 && k.kind == KeyEventKind::Press
@@ -96,8 +97,20 @@ pub async fn run(
     }
 
     // Screen 1: pick a board.
-    let labels: Vec<String> = boards.iter().map(|b| format!("#{}  {}", b.number, b.title)).collect();
-    let board = match pick(terminal, &mut input, &format!("Setup: {repo}"), "Pick a board:", &labels, false).await? {
+    let labels: Vec<String> = boards
+        .iter()
+        .map(|b| format!("#{}  {}", b.number, b.title))
+        .collect();
+    let board = match pick(
+        terminal,
+        &mut input,
+        &format!("Setup: {repo}"),
+        "Pick a board:",
+        &labels,
+        false,
+    )
+    .await?
+    {
         Some(i) => &boards[i],
         None => bail!("wizard cancelled"),
     };
@@ -105,7 +118,9 @@ pub async fn run(
     // Seed status_order from the board's Status column; default excludes to any
     // Done/Backlog columns that exist.
     draw_loading(terminal, "Reading board columns…")?;
-    let status_order = gh::project::status_options(&owner, board.number).await.unwrap_or_default();
+    let status_order = gh::project::status_options(&owner, board.number)
+        .await
+        .unwrap_or_default();
     let exclude_statuses = ["Done", "Backlog"]
         .into_iter()
         .filter(|d| status_order.iter().any(|s| s.eq_ignore_ascii_case(d)))
@@ -117,20 +132,33 @@ pub async fn run(
     let start = match skills.len() {
         0 => None,
         1 => Some(skills[0].clone()),
-        _ => pick(terminal, &mut input, &format!("Setup: {repo}"), "Pick a start-work skill (s to skip):", &skills, true)
-            .await?
-            .map(|i| skills[i].clone()),
+        _ => pick(
+            terminal,
+            &mut input,
+            &format!("Setup: {repo}"),
+            "Pick a start-work skill (s to skip):",
+            &skills,
+            true,
+        )
+        .await?
+        .map(|i| skills[i].clone()),
     };
 
     // Presets: `all`, plus `mine` bound to the resolved viewer login so it filters
     // without special `@me` handling.
-    let mut presets = vec![Preset { name: "all".into(), include: Filter::default() }];
+    let mut presets = vec![Preset {
+        name: "all".into(),
+        include: Filter::default(),
+    }];
     if let Ok(login) = gh::viewer_login().await
         && !login.is_empty()
     {
         presets.push(Preset {
             name: "mine".into(),
-            include: Filter { assignees: vec![login], ..Default::default() },
+            include: Filter {
+                assignees: vec![login],
+                ..Default::default()
+            },
         });
     }
 
@@ -149,11 +177,21 @@ pub async fn run(
 
     let project = ProjectConfig {
         name,
-        repos: if bind_repo { vec![repo.clone()] } else { vec![] },
-        board: Board { owner, number: board.number },
+        repos: if bind_repo {
+            vec![repo.clone()]
+        } else {
+            vec![]
+        },
+        board: Board {
+            owner,
+            number: board.number,
+        },
         target_session: None,
         claude_subdir: None,
-        skill: Skill { start, create: None },
+        skill: Skill {
+            start,
+            create: None,
+        },
         status_order,
         exclude_statuses,
         presets,
@@ -244,7 +282,14 @@ fn step(state: &mut ListState, len: usize, delta: isize) {
     state.select(Some(next));
 }
 
-fn draw_pick(f: &mut Frame, title: &str, prompt: &str, items: &[String], skippable: bool, state: &mut ListState) {
+fn draw_pick(
+    f: &mut Frame,
+    title: &str,
+    prompt: &str,
+    items: &[String],
+    skippable: bool,
+    state: &mut ListState,
+) {
     let area = f.area();
     let block = Block::default()
         .borders(Borders::ALL)
@@ -253,12 +298,22 @@ fn draw_pick(f: &mut Frame, title: &str, prompt: &str, items: &[String], skippab
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    let [prompt_area, list_area, hint_area] =
-        Layout::vertical([Constraint::Length(1), Constraint::Min(1), Constraint::Length(1)]).areas(inner);
+    let [prompt_area, list_area, hint_area] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(1),
+        Constraint::Length(1),
+    ])
+    .areas(inner);
 
-    f.render_widget(Paragraph::new(prompt).style(Style::default().fg(NORD_DIM)), prompt_area);
+    f.render_widget(
+        Paragraph::new(prompt).style(Style::default().fg(NORD_DIM)),
+        prompt_area,
+    );
 
-    let rows: Vec<ListItem> = items.iter().map(|s| ListItem::new(Line::from(s.as_str()))).collect();
+    let rows: Vec<ListItem> = items
+        .iter()
+        .map(|s| ListItem::new(Line::from(s.as_str())))
+        .collect();
     let list = List::new(rows)
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
         .highlight_symbol("▶ ");
@@ -269,32 +324,43 @@ fn draw_pick(f: &mut Frame, title: &str, prompt: &str, items: &[String], skippab
     } else {
         "j/k move · Enter select · q cancel"
     };
-    f.render_widget(Paragraph::new(hint).style(Style::default().fg(NORD_DIM)), hint_area);
+    f.render_widget(
+        Paragraph::new(hint).style(Style::default().fg(NORD_DIM)),
+        hint_area,
+    );
 }
 
 /// A one-shot full-screen status frame (no input).
 fn draw_loading(terminal: &mut DefaultTerminal, msg: &str) -> Result<()> {
     terminal.draw(|f| {
-        let p = Paragraph::new(msg).style(Style::default().fg(NORD_DIM)).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(NORD_CYAN))
-                .title(" lazytickets "),
-        );
+        let p = Paragraph::new(msg)
+            .style(Style::default().fg(NORD_DIM))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(NORD_CYAN))
+                    .title(" lazytickets "),
+            );
         f.render_widget(p, f.area());
     })?;
     Ok(())
 }
 
 /// Show a message and wait for any keypress.
-async fn show_message(terminal: &mut DefaultTerminal, input: &mut Input<'_>, msg: &str) -> Result<()> {
+async fn show_message(
+    terminal: &mut DefaultTerminal,
+    input: &mut Input<'_>,
+    msg: &str,
+) -> Result<()> {
     terminal.draw(|f| {
-        let p = Paragraph::new(msg).style(Style::default().fg(NORD_DIM)).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(NORD_CYAN))
-                .title(" lazytickets "),
-        );
+        let p = Paragraph::new(msg)
+            .style(Style::default().fg(NORD_DIM))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(NORD_CYAN))
+                    .title(" lazytickets "),
+            );
         f.render_widget(p, f.area());
     })?;
     let _ = input.next_key().await?;
