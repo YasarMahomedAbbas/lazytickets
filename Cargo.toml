@@ -2,6 +2,19 @@
 name = "lazytickets"
 version = "0.1.0"
 edition = "2024"
+description = "A lazygit-style terminal UI for GitHub Projects v2 boards that drives Claude Code to start work on tickets."
+authors = ["Yasar Mahomed Abbas <yasar.tm44@gmail.com>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/YasarMahomedAbbas/lazytickets"
+homepage = "https://github.com/YasarMahomedAbbas/lazytickets"
+readme = "README.md"
+keywords = ["tui", "github", "projects", "tmux", "ratatui"]
+categories = ["command-line-utilities", "development-tools"]
+
+[profile.release]
+# Smaller, faster-to-download release binaries for the prebuilt artifacts.
+lto = "thin"
+strip = true
 
 [dependencies]
 anyhow = "1.0.103"

@@ -1,0 +1,12 @@
+[workspace]
+# We distribute prebuilt binaries, not a crates.io library, so skip the registry
+# publish. release-plz still bumps the version, writes CHANGELOG.md, and creates
+# the git tag + GitHub Release — the tag is what triggers release.yml to build
+# and attach the binaries.
+publish = false
+git_tag_enable = true
+git_release_enable = true
+
+# Semver is inferred from Conventional Commits: fix:/feat: bump the patch and
+# feat!:/BREAKING CHANGE: bump the minor while under 1.0.0 (0.MINOR.x). Bump to
+# 1.0.0 by hand in the Release PR when the app stabilises.
