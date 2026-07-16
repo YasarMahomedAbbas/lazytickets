@@ -9,9 +9,13 @@ use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
 pub fn render(frame: &mut Frame, modal: &Modal) {
-    // The status mover renders its own selectable list; the rest are text popups.
+    // The pickers render their own selectable lists; the rest are text popups.
     if let Modal::StatusMove { options, selected, .. } = modal {
         render_mover(frame, options, *selected);
+        return;
+    }
+    if let Modal::ProjectPick { names, selected } = modal {
+        render_project_pick(frame, names, *selected);
         return;
     }
     if matches!(modal, Modal::Help) {
@@ -28,7 +32,7 @@ pub fn render(frame: &mut Frame, modal: &Modal) {
             NORD_CYAN,
         ),
         Modal::Message(msg) => (" lazytickets ", format!("{msg}\n\n[any key] dismiss"), NORD_AMBER),
-        Modal::StatusMove { .. } | Modal::Help | Modal::None => return,
+        Modal::StatusMove { .. } | Modal::ProjectPick { .. } | Modal::Help | Modal::None => return,
     };
 
     let area = centered(60, 11, frame.area());
@@ -73,6 +77,56 @@ fn render_mover(frame: &mut Frame, options: &[String], selected: usize) {
     );
 }
 
+/// The project switcher: configured projects plus a trailing "Add a board…" row
+/// (highlighted when `selected == names.len()`).
+fn render_project_pick(frame: &mut Frame, names: &[String], selected: usize) {
+    let mut rows: Vec<String> = names.to_vec();
+    rows.push("＋ Add a board…".to_string());
+
+    let mut lines: Vec<Line> = rows
+        .iter()
+        .enumerate()
+        .map(|(i, name)| {
+            if i == selected {
+                Line::styled(format!("▶ {name}"), Style::default().add_modifier(Modifier::REVERSED))
+            } else {
+                Line::raw(format!("  {name}"))
+            }
+        })
+        .collect();
+    lines.push(Line::raw(""));
+    lines.push(Line::styled("j/k move · Enter open · Esc cancel", Style::default().fg(NORD_AMBER)));
+
+    let height = (lines.len() as u16 + 2).min(frame.area().height);
+    let area = centered(50, height, frame.area());
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .title(" Switch project ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(NORD_CYAN)),
+        ),
+        area,
+    );
+}
+
+/// A transient centered notice (e.g. "Loading…") drawn over the current frame
+/// while a blocking board fetch is in flight. No dismiss hint — it's not modal.
+pub fn render_notice(frame: &mut Frame, msg: &str) {
+    let area = centered(50, 3, frame.area());
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Paragraph::new(msg).wrap(Wrap { trim: true }).block(
+            Block::default()
+                .title(" lazytickets ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(NORD_CYAN)),
+        ),
+        area,
+    );
+}
+
 fn render_help(frame: &mut Frame) {
     let rows = [
         ("j / k · ↓ / ↑", "move selection"),
@@ -80,6 +134,7 @@ fn render_help(frame: &mut Frame) {
         ("/", "live fuzzy filter (Esc clears)"),
         ("s", "start work (drive claude pane)"),
         ("m", "move status column"),
+        ("p", "switch project"),
         ("o", "open in browser"),
         ("r", "force refresh"),
         ("?", "help"),

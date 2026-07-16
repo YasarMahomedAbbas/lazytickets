@@ -199,6 +199,7 @@ _First usable as the real tmux tool at **M4** (unhardcodes the board); does the 
 | `/` | live fuzzy filter (Esc to clear) |
 | `s` | start work (drive claude pane) |
 | `m` | manual status mover |
+| `p` | switch project (or add a board) |
 | `o` | open in browser |
 | `r` | force refresh |
 | `?` | help overlay |

@@ -16,21 +16,60 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 use std::path::Path;
+use tokio::sync::mpsc;
+
+/// Where the wizard reads keystrokes from.
+///
+/// At first run (`main`) the wizard owns the terminal, so it reads events
+/// directly. When launched from inside the running app ("Add a board…") the main
+/// loop already has a background thread draining `event::read()` into a channel —
+/// reading the terminal here too would make the two compete and drop every other
+/// keypress. In that case the wizard pulls from the same channel instead.
+pub enum Input<'a> {
+    Terminal,
+    Channel(&'a mut mpsc::UnboundedReceiver<Event>),
+}
+
+impl Input<'_> {
+    /// Block until the next key *press* (release/repeat events are skipped).
+    async fn next_key(&mut self) -> Result<KeyCode> {
+        loop {
+            let ev = match self {
+                Input::Terminal => tokio::task::spawn_blocking(event::read).await??,
+                Input::Channel(rx) => {
+                    rx.recv().await.ok_or_else(|| anyhow::anyhow!("input channel closed"))?
+                }
+            };
+            if let Event::Key(k) = ev
+                && k.kind == KeyEventKind::Press
+            {
+                return Ok(k.code);
+            }
+        }
+    }
+}
 
 /// Run the wizard for the (unrecognised) repo at `cwd`. On success writes the new
 /// project to `config` on disk and returns it. Cancelling or a missing remote is
 /// an error the caller surfaces after restoring the terminal.
+/// `bind_repo` controls whether the new project claims the current repo in its
+/// `repos:` (so cwd resolves to it on future launches). True for the first-run
+/// wizard; false for the in-TUI "Add a board…" flow, which registers a
+/// switch-only board that must not hijack another project's cwd resolution.
 pub async fn run(
     terminal: &mut DefaultTerminal,
     repo: Option<String>,
     cwd: &Path,
     mut config: Config,
+    bind_repo: bool,
+    mut input: Input<'_>,
 ) -> Result<ProjectConfig> {
     let repo = match repo {
         Some(r) => r,
         None => {
             show_message(
                 terminal,
+                &mut input,
                 "No GitHub remote found here.\n\nlazytickets resolves a board from the repo's `origin` remote, so run it from \
                  inside a GitHub repository.\n\nPress any key to exit.",
             )
@@ -47,6 +86,7 @@ pub async fn run(
     if boards.is_empty() {
         show_message(
             terminal,
+            &mut input,
             &format!(
                 "No open project boards found for {owner}.\n\nCreate one on GitHub, then relaunch.\n\nPress any key to exit."
             ),
@@ -57,7 +97,7 @@ pub async fn run(
 
     // Screen 1: pick a board.
     let labels: Vec<String> = boards.iter().map(|b| format!("#{}  {}", b.number, b.title)).collect();
-    let board = match pick(terminal, &format!("Setup: {repo}"), "Pick a board:", &labels, false).await? {
+    let board = match pick(terminal, &mut input, &format!("Setup: {repo}"), "Pick a board:", &labels, false).await? {
         Some(i) => &boards[i],
         None => bail!("wizard cancelled"),
     };
@@ -77,7 +117,7 @@ pub async fn run(
     let start = match skills.len() {
         0 => None,
         1 => Some(skills[0].clone()),
-        _ => pick(terminal, &format!("Setup: {repo}"), "Pick a start-work skill (s to skip):", &skills, true)
+        _ => pick(terminal, &mut input, &format!("Setup: {repo}"), "Pick a start-work skill (s to skip):", &skills, true)
             .await?
             .map(|i| skills[i].clone()),
     };
@@ -94,9 +134,22 @@ pub async fn run(
         });
     }
 
+    // Name the project after the *board* (what the user picked), not the repo —
+    // otherwise multiple boards added from one repo all collide on the repo name.
+    // Fall back to the repo name for an untitled board, and disambiguate any
+    // collision with an existing entry by appending the board number.
+    let base = match board.title.trim() {
+        "" => repo.split('/').nth(1).unwrap_or(&repo),
+        title => title,
+    };
+    let mut name = base.to_string();
+    if config.projects.iter().any(|p| p.name == name) {
+        name = format!("{name} #{}", board.number);
+    }
+
     let project = ProjectConfig {
-        name: repo.split('/').nth(1).unwrap_or(&repo).to_string(),
-        repos: vec![repo.clone()],
+        name,
+        repos: if bind_repo { vec![repo.clone()] } else { vec![] },
         board: Board { owner, number: board.number },
         target_session: None,
         claude_subdir: None,
@@ -160,6 +213,7 @@ fn skill_dir_names(dir: &Path) -> Vec<String> {
 /// cancel/skip (`q`/`Esc`, or `s` when `skippable`).
 async fn pick(
     terminal: &mut DefaultTerminal,
+    input: &mut Input<'_>,
     title: &str,
     prompt: &str,
     items: &[String],
@@ -169,7 +223,7 @@ async fn pick(
     state.select(Some(0));
     loop {
         terminal.draw(|f| draw_pick(f, title, prompt, items, skippable, &mut state))?;
-        match read_key().await? {
+        match input.next_key().await? {
             KeyCode::Char('j') | KeyCode::Down => step(&mut state, items.len(), 1),
             KeyCode::Char('k') | KeyCode::Up => step(&mut state, items.len(), -1),
             KeyCode::Enter => return Ok(state.selected()),
@@ -233,7 +287,7 @@ fn draw_loading(terminal: &mut DefaultTerminal, msg: &str) -> Result<()> {
 }
 
 /// Show a message and wait for any keypress.
-async fn show_message(terminal: &mut DefaultTerminal, msg: &str) -> Result<()> {
+async fn show_message(terminal: &mut DefaultTerminal, input: &mut Input<'_>, msg: &str) -> Result<()> {
     terminal.draw(|f| {
         let p = Paragraph::new(msg).style(Style::default().fg(NORD_DIM)).block(
             Block::default()
@@ -243,18 +297,6 @@ async fn show_message(terminal: &mut DefaultTerminal, msg: &str) -> Result<()> {
         );
         f.render_widget(p, f.area());
     })?;
-    let _ = read_key().await?;
+    let _ = input.next_key().await?;
     Ok(())
-}
-
-/// Block on the next key press without stalling the tokio runtime.
-async fn read_key() -> Result<KeyCode> {
-    loop {
-        let ev = tokio::task::spawn_blocking(event::read).await??;
-        if let Event::Key(k) = ev
-            && k.kind == KeyEventKind::Press
-        {
-            return Ok(k.code);
-        }
-    }
 }

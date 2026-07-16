@@ -81,6 +81,13 @@ pub fn resolve(config: &Config, cwd: &Path) -> Resolution {
     Resolution::Unknown { repo }
 }
 
+/// The normalised `owner/repo` for the git repo at `cwd`, or `None` if it isn't a
+/// GitHub checkout. Used by the in-TUI "Add a board…" flow to feed the wizard.
+pub fn repo_at(cwd: &Path) -> Option<String> {
+    let root = git_toplevel(cwd)?;
+    git_origin_url(&root).as_deref().and_then(normalize_remote)
+}
+
 /// `git -C <dir> rev-parse --show-toplevel` → repo root, or `None`.
 fn git_toplevel(dir: &Path) -> Option<std::path::PathBuf> {
     let out = Command::new("git")

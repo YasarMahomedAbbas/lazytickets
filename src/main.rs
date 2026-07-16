@@ -40,7 +40,7 @@ async fn main() -> anyhow::Result<()> {
     // Known repo → open directly; unknown → the first-run wizard writes a config.
     let cfg = match resolution {
         Resolution::Project(p) => *p,
-        Resolution::Unknown { repo } => match config::wizard::run(&mut terminal, repo, &cwd, config).await {
+        Resolution::Unknown { repo } => match config::wizard::run(&mut terminal, repo, &cwd, config, true, config::wizard::Input::Terminal).await {
             Ok(p) => p,
             Err(e) => {
                 ratatui::restore();
@@ -82,8 +82,10 @@ async fn run(terminal: &mut DefaultTerminal, app: &mut App) -> anyhow::Result<()
 
     // Background board poll (external changes appear silently within ~45s) + the
     // `r` force-refresh, both delivering fresh snapshots on the same channel.
-    let (poll_tx, mut poll_rx) = mpsc::unbounded_channel::<Vec<model::Item>>();
-    poll::spawn(app.config.board.owner.clone(), app.config.board.number, poll_tx.clone());
+    // The handle is re-targeted when the user switches projects (`p`).
+    let (poll_tx, mut poll_rx) = mpsc::unbounded_channel::<poll::Snapshot>();
+    let mut poll_handle =
+        poll::spawn(app.config.board.owner.clone(), app.config.board.number, poll_tx.clone());
 
     loop {
         terminal.draw(|frame| ui::render(frame, app))?;
@@ -109,6 +111,14 @@ async fn run(terminal: &mut DefaultTerminal, app: &mut App) -> anyhow::Result<()
                                         begin_status_move(app, id, status, &write_tx).await;
                                     } else if matches!(app.modal, Modal::Confirm { .. }) {
                                         confirm_start_work(app, &write_tx).await;
+                                    } else if let Modal::ProjectPick { names, selected } = &app.modal {
+                                        let selected = *selected;
+                                        if selected >= names.len() {
+                                            add_board(terminal, app, &mut poll_handle, &poll_tx, &mut input_rx).await;
+                                        } else {
+                                            switch_to_project(terminal, app, selected, &mut poll_handle, &poll_tx).await;
+                                        }
+                                        reschedule = true; // load detail for the new board's selection
                                     } else {
                                         app.modal = Modal::None;
                                     }
@@ -136,6 +146,7 @@ async fn run(terminal: &mut DefaultTerminal, app: &mut App) -> anyhow::Result<()
                                 KeyCode::Char('/') => app.enter_filter(),
                                 KeyCode::Char('s') => begin_start_work(app).await,
                                 KeyCode::Char('m') => open_status_mover(app).await,
+                                KeyCode::Char('p') => open_project_picker(app),
                                 KeyCode::Char('o') => open_in_browser(app).await,
                                 KeyCode::Char('r') => poll::refresh_now(
                                     app.config.board.owner.clone(),
@@ -183,7 +194,10 @@ async fn run(terminal: &mut DefaultTerminal, app: &mut App) -> anyhow::Result<()
                 }
             }
             maybe_poll = poll_rx.recv() => {
-                if let Some(items) = maybe_poll
+                if let Some((owner, number, items)) = maybe_poll
+                    // Ignore snapshots from a board we've since switched away from.
+                    && owner == app.config.board.owner
+                    && number == app.config.board.number
                     && items != app.items
                 {
                     // External change (or `r`): adopt the snapshot, keep selection.
@@ -322,6 +336,105 @@ async fn open_in_browser(app: &mut App) {
             }
         }
         _ => app.modal = Modal::Message("Draft item — no issue to open in the browser.".into()),
+    }
+}
+
+/// Open the project switcher, listing every configured project (freshly reloaded
+/// from disk, so wizard-added boards appear) plus an "Add a board…" entry.
+fn open_project_picker(app: &mut App) {
+    let cfg = match Config::load() {
+        Ok(c) => c,
+        Err(e) => {
+            app.modal = Modal::Message(format!("Couldn't read config:\n{e}"));
+            return;
+        }
+    };
+    let names: Vec<String> = cfg.projects.iter().map(|p| p.name.clone()).collect();
+    let selected = names.iter().position(|n| *n == app.config.name).unwrap_or(0);
+    app.modal = Modal::ProjectPick { names, selected };
+}
+
+/// Switch the active board to the configured project at `index` (positional, so
+/// duplicate project names stay unambiguous): reload config, fetch its board,
+/// swap App state, and re-target the poller. On failure the current board is left
+/// untouched and a message is shown.
+async fn switch_to_project(
+    terminal: &mut DefaultTerminal,
+    app: &mut App,
+    index: usize,
+    poll_handle: &mut tokio::task::JoinHandle<()>,
+    poll_tx: &mpsc::UnboundedSender<poll::Snapshot>,
+) {
+    app.modal = Modal::None;
+    let cfg = match Config::load() {
+        Ok(c) => c,
+        Err(e) => {
+            app.modal = Modal::Message(format!("Couldn't read config:\n{e}"));
+            return;
+        }
+    };
+    let Some(project) = cfg.projects.get(index).cloned() else {
+        app.modal = Modal::Message("That project is no longer in the config.".into());
+        return;
+    };
+    load_board_into(terminal, app, project, poll_handle, poll_tx).await;
+}
+
+/// Run the first-run wizard live (against the current repo) to register a new
+/// board, then switch to it. Cancelling returns to the current board silently.
+async fn add_board(
+    terminal: &mut DefaultTerminal,
+    app: &mut App,
+    poll_handle: &mut tokio::task::JoinHandle<()>,
+    poll_tx: &mpsc::UnboundedSender<poll::Snapshot>,
+    input_rx: &mut mpsc::UnboundedReceiver<Event>,
+) {
+    app.modal = Modal::None;
+    let cfg = match Config::load() {
+        Ok(c) => c,
+        Err(e) => {
+            app.modal = Modal::Message(format!("Couldn't read config:\n{e}"));
+            return;
+        }
+    };
+    let cwd = match std::env::current_dir() {
+        Ok(c) => c,
+        Err(e) => {
+            app.modal = Modal::Message(format!("Couldn't read the working directory:\n{e}"));
+            return;
+        }
+    };
+    let repo = resolver::repo_at(&cwd);
+    // The wizard takes over the whole screen and writes the new project to disk.
+    // Any error (cancel / no remote — it shows its own message) just returns us
+    // to the current board.
+    if let Ok(project) =
+        config::wizard::run(terminal, repo, &cwd, cfg, false, config::wizard::Input::Channel(input_rx)).await
+    {
+        load_board_into(terminal, app, project, poll_handle, poll_tx).await;
+    }
+}
+
+/// Fetch `project`'s board and adopt it into `app`, re-targeting the poller.
+async fn load_board_into(
+    terminal: &mut DefaultTerminal,
+    app: &mut App,
+    project: config::schema::ProjectConfig,
+    poll_handle: &mut tokio::task::JoinHandle<()>,
+    poll_tx: &mpsc::UnboundedSender<poll::Snapshot>,
+) {
+    let _ = terminal.draw(|f| {
+        ui::render(f, app);
+        ui::modal::render_notice(f, &format!("Loading {} #{}…", project.name, project.board.number));
+    });
+    match gh::project::item_list(&project.board.owner, project.board.number).await {
+        Ok(items) => {
+            let (owner, number) = (project.board.owner.clone(), project.board.number);
+            app.switch_board(project, items);
+            poll_handle.abort();
+            *poll_handle = poll::spawn(owner, number, poll_tx.clone());
+        }
+        Err(e) => app.modal = Modal::Message(format!("Couldn't load board:\n{e}")),
     }
 }
 
