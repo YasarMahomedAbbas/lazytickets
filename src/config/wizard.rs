@@ -115,13 +115,13 @@ pub async fn run(
         None => bail!("wizard cancelled"),
     };
 
-    // Seed status_order from the board's Status column; default excludes to any
-    // Done/Backlog columns that exist.
+    // Seed status_order from the board's Status column; hide a Done column by
+    // default (revealable via a preset that names it). Backlog stays visible.
     draw_loading(terminal, "Reading board columns…")?;
     let status_order = gh::project::status_options(&owner, board.number)
         .await
         .unwrap_or_default();
-    let exclude_statuses = ["Done", "Backlog"]
+    let exclude_statuses = ["Done"]
         .into_iter()
         .filter(|d| status_order.iter().any(|s| s.eq_ignore_ascii_case(d)))
         .map(str::to_string)

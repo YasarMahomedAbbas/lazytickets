@@ -197,6 +197,9 @@ _First usable as the real tmux tool at **M4** (unhardcodes the board); does the 
 | `j`/`k`, `↓`/`↑` | move selection |
 | `Tab`/`Shift-Tab`, `1..9` | switch preset tab |
 | `/` | live fuzzy filter (Esc to clear) |
+| `f` | new saved filter (build a preset, persists to config) |
+| `e` | edit the active filter (re-seeds the builder, persists) |
+| `d` | delete the active filter (confirm, persists) |
 | `s` | start work (drive claude pane) |
 | `m` | manual status mover |
 | `p` | switch project (or add a board) |
@@ -217,7 +220,7 @@ board = { owner = "WhiteWolfStudio", number = 6 }
 target_session = "travelsmart"      # tmux session for start-work
 claude_subdir  = "Frontend"         # where claude runs
 status_order = ["Refine", "Create Contract", "Ready To Implement", "In progress", "In review", "Done"]
-exclude_statuses = ["Done", "Backlog"]
+exclude_statuses = ["Done"]         # hidden by default; a preset naming a status reveals it
 
 [projects.skill]
 start = "frontend-start-ticket"     # or global ~/.claude/skills/ fallback
@@ -255,3 +258,61 @@ across all your repos, so it's worth doing before M5 rather than after.
 ## 7. Deferred to v2 (do not build in v1)
 Pluggable file-ticket source for gegrond · webhook push via VPS relay · AI create-issue ·
 auto-authoring a skill into a skill-less repo · busy/idle status column across all projects.
+
+## 8. Release & distribution  *(set up — go live tomorrow)*
+
+Automated, semver-versioned releases with prebuilt Linux binaries and a curl installer.
+The pipeline is committed and pushed; what remains is the one-time secret + cutting v0.1.0.
+
+### What's already in place (committed on `master`)
+- **Crate metadata + `[profile.release]`** (thin LTO, strip) in `Cargo.toml`; dual
+  `MIT OR Apache-2.0` license (`LICENSE-MIT`, `LICENSE-APACHE`).
+- **`README.md`** — install (curl / tarball / cargo), updating, and a maintainer "Releasing" section.
+- **Startup preflight** in `main.rs`: hard-fails on missing `gh`, warns on missing `tmux`;
+  `--version` / `--help` flags.
+- **CI** (`.github/workflows/ci.yml`) — `fmt` + `clippy -D warnings` + `test` on push/PR.
+- **release-plz** (`.github/workflows/release-plz.yml` + `release-plz.toml`) — on push to
+  `master`, opens a semver Release PR from Conventional Commits; merging it tags `vX.Y.Z`.
+  `publish = false` (binaries, not crates.io).
+- **Binary build** (`.github/workflows/release.yml`) — on the `v*` tag, cross-compiles
+  `x86_64` + `aarch64` musl binaries with `.sha256` sidecars and attaches them plus
+  `lazytickets-installer.sh` (`contrib/install.sh`) to the GitHub Release. Asset names omit
+  the version so `/releases/latest/download/` URLs stay stable.
+
+### Status so far (2026-07-17)
+- ✅ **CI and release-plz are both green** on `master` (fixed in `a7d1e2e`): the first runs
+  failed on a `clippy::question_mark` lint in `resolver.rs` (now uses `?`) and on release-plz's
+  checkout getting an empty `token`; the workflow now falls back to `github.token` when the PAT
+  is unset.
+- ⏳ release-plz has run, so a **"chore: release v0.1.0" PR** should be open (version bump +
+  changelog). It has **not** been merged.
+- ❌ No `RELEASE_PLZ_TOKEN` secret yet, no release cut, so the curl installer isn't live.
+  Install today is from source: `cargo install --git …`.
+
+### Next steps — ordered checklist
+1. **Add the `RELEASE_PLZ_TOKEN` secret FIRST.** Fine-grained PAT, Contents + Pull requests:
+   write (Settings → Secrets and variables → Actions). Do this *before* merging the release PR —
+   the built-in `GITHUB_TOKEN` can't trigger `release.yml`, so a tag created without the PAT
+   won't build binaries.
+2. **Cut v0.1.0.** Merge the open "chore: release v0.1.0" PR → it tags `v0.1.0` → `release.yml`
+   builds the musl binaries + installer and attaches them to the release.
+   - *No-PAT fallback:* `git tag v0.1.0 && git push origin v0.1.0` (triggers the binary build
+     directly; skips the automated changelog PR until the secret exists).
+3. **Verify the curl install** on a clean shell once the release publishes:
+   `curl --proto '=https' --tlsv1.2 -LsSf .../releases/latest/download/lazytickets-installer.sh | sh`
+4. **Confirm `gh`/`tmux` prereq messaging** reads well when either is missing.
+5. **Minor polish (optional):** the installer's PATH hint suggests editing `config.fish`; fish's
+   `fish_add_path ~/.cargo/bin` (or `~/.local/bin`) is the better advice — update `contrib/install.sh`.
+
+### Install methods (for reference)
+- **curl installer** (Linux, no toolchain) → `~/.local/bin`; re-run to update. *(needs a release)*
+- **Tarball** from the Releases page + `.sha256`. *(needs a release)*
+- **From source, works today:** `cargo install --git https://github.com/YasarMahomedAbbas/lazytickets`
+  (or `--path .`); update with `--force`.
+
+### Later / nice-to-have
+- **AUR package** (`lazytickets-bin`) pointing at the release tarball — natural for the Arch/CachyOS box.
+- **Homebrew tap** for macOS/Linux reach (thin wrapper over the same artifacts).
+- **macOS/Windows targets** — deferred; tmux-centric, so low priority. Extend the `release.yml` matrix.
+- **In-app self-update** (`lazytickets update`) — v2; the curl re-run covers updating for now.
+- **crates.io publish** — flip `publish = false` and add `CARGO_REGISTRY_TOKEN` if ever wanted.

@@ -1,6 +1,6 @@
 //! Application state, selection, and the filtered view. Rendering lives in `ui`.
 
-use crate::config::schema::ProjectConfig;
+use crate::config::schema::{Filter, Preset, ProjectConfig};
 use crate::gh::issue::IssueDetail;
 use crate::model::Item;
 use fuzzy_matcher::FuzzyMatcher;
@@ -49,6 +49,14 @@ pub enum Modal {
     },
     /// Keybindings overlay (M7); any key dismisses.
     Help,
+    /// Interactive builder for a new saved preset (name + status/label/assignee
+    /// toggles). Persists to `config.toml` on save.
+    FilterBuild(FilterDraft),
+    /// Awaiting y/n before deleting the preset at `index` (`name` for display).
+    ConfirmDelete {
+        index: usize,
+        name: String,
+    },
     /// A warning or result line; any key dismisses it.
     Message(String),
 }
@@ -56,6 +64,92 @@ pub enum Modal {
 impl Modal {
     pub fn is_open(&self) -> bool {
         !matches!(self, Modal::None)
+    }
+}
+
+/// In-progress state for the filter builder modal. The three option groups are
+/// seeded from the values actually present on the board; `focus` walks a flat
+/// list where `0` is the name field and `1..` are the option rows in order
+/// (statuses, then labels, then assignees).
+pub struct FilterDraft {
+    pub name: String,
+    pub statuses: Vec<(String, bool)>,
+    pub labels: Vec<(String, bool)>,
+    pub assignees: Vec<(String, bool)>,
+    pub focus: usize,
+    /// The name of the preset being edited, or `None` for a brand-new filter.
+    /// On save, a rename (name changed from this) drops the old entry.
+    pub original: Option<String>,
+}
+
+impl FilterDraft {
+    /// Total number of toggleable option rows across all three groups.
+    pub fn option_count(&self) -> usize {
+        self.statuses.len() + self.labels.len() + self.assignees.len()
+    }
+
+    /// Move focus by `delta` over `[name, option_0, … option_n-1]`, clamped.
+    pub fn move_focus(&mut self, delta: isize) {
+        let max = self.option_count() as isize; // focus 0 = name, so max index = option_count
+        self.focus = (self.focus as isize + delta).clamp(0, max) as usize;
+    }
+
+    /// Jump focus to the start of the previous/next section, where a section is
+    /// the name field or a non-empty option group. Empty groups are skipped, and
+    /// the ends clamp.
+    pub fn jump_section(&mut self, delta: isize) {
+        // Focus index at which each section begins: name (0), then the first
+        // option row of each non-empty group.
+        let mut starts = vec![0usize];
+        let mut running = 1usize;
+        for group in [&self.statuses, &self.labels, &self.assignees] {
+            if !group.is_empty() {
+                starts.push(running);
+            }
+            running += group.len();
+        }
+        let current = starts.iter().rposition(|&s| s <= self.focus).unwrap_or(0);
+        let next = (current as isize + delta).clamp(0, starts.len() as isize - 1) as usize;
+        self.focus = starts[next];
+    }
+
+    /// Flip the checkbox under the focused option row (no-op on the name field).
+    pub fn toggle_focused(&mut self) {
+        if self.focus == 0 {
+            return;
+        }
+        let mut i = self.focus - 1;
+        for group in [&mut self.statuses, &mut self.labels, &mut self.assignees] {
+            if i < group.len() {
+                group[i].1 = !group[i].1;
+                return;
+            }
+            i -= group.len();
+        }
+    }
+
+    /// Build a named `Preset` from the current selections, or `None` if the name
+    /// is blank. Unchecked groups leave that filter dimension unconstrained.
+    pub fn to_preset(&self) -> Option<Preset> {
+        let name = self.name.trim();
+        if name.is_empty() {
+            return None;
+        }
+        let picked = |group: &[(String, bool)]| -> Vec<String> {
+            group
+                .iter()
+                .filter(|(_, on)| *on)
+                .map(|(v, _)| v.clone())
+                .collect()
+        };
+        Some(Preset {
+            name: name.to_string(),
+            include: Filter {
+                labels: picked(&self.labels),
+                statuses: picked(&self.statuses),
+                assignees: picked(&self.assignees),
+            },
+        })
     }
 }
 
@@ -204,6 +298,136 @@ impl App {
         self.set_preset(next)
     }
 
+    // --- filter builder ---
+
+    /// Open the builder for a brand-new filter: every board value present but
+    /// unchecked, no name.
+    pub fn open_filter_builder(&mut self) {
+        self.modal = Modal::FilterBuild(FilterDraft {
+            name: String::new(),
+            statuses: Self::seed_options(self.board_statuses(), &[]),
+            labels: Self::seed_options(self.distinct(|it| &it.labels), &[]),
+            assignees: Self::seed_options(self.distinct(|it| &it.assignees), &[]),
+            focus: 0,
+            original: None,
+        });
+    }
+
+    /// Open the builder pre-seeded from the active preset, so it can be edited
+    /// in place. Values the preset references but that no board item currently
+    /// has are still shown (and checked) so editing never silently drops them.
+    pub fn open_filter_editor(&mut self) {
+        let preset = &self.config.presets[self.active_preset];
+        let name = preset.name.clone();
+        let inc = preset.include.clone();
+        let statuses = Self::seed_options(self.board_statuses(), &inc.statuses);
+        let labels = Self::seed_options(self.distinct(|it| &it.labels), &inc.labels);
+        let assignees = Self::seed_options(self.distinct(|it| &it.assignees), &inc.assignees);
+        self.modal = Modal::FilterBuild(FilterDraft {
+            name: name.clone(),
+            statuses,
+            labels,
+            assignees,
+            focus: 0,
+            original: Some(name),
+        });
+    }
+
+    /// Build a checkbox group from the board's values, ticking any that appear in
+    /// `selected`, then appending selected values the board doesn't have (ticked).
+    fn seed_options(board: Vec<String>, selected: &[String]) -> Vec<(String, bool)> {
+        let mut opts: Vec<(String, bool)> = board
+            .into_iter()
+            .map(|v| {
+                let on = selected.iter().any(|s| s.eq_ignore_ascii_case(&v));
+                (v, on)
+            })
+            .collect();
+        for s in selected {
+            if !opts.iter().any(|(v, _)| v.eq_ignore_ascii_case(s)) {
+                opts.push((s.clone(), true));
+            }
+        }
+        opts
+    }
+
+    /// Distinct statuses on the board, ordered by `status_order` (unknowns last).
+    fn board_statuses(&self) -> Vec<String> {
+        let mut seen: Vec<String> = Vec::new();
+        for it in &self.items {
+            if let Some(s) = it.status.as_deref()
+                && !seen.iter().any(|e| e.eq_ignore_ascii_case(s))
+            {
+                seen.push(s.to_string());
+            }
+        }
+        seen.sort_by_key(|s| self.config.status_rank(Some(s)));
+        seen
+    }
+
+    /// Distinct values of a `Vec<String>` field across every item, first-seen order.
+    fn distinct(&self, field: impl Fn(&Item) -> &Vec<String>) -> Vec<String> {
+        let mut seen: Vec<String> = Vec::new();
+        for it in &self.items {
+            for v in field(it) {
+                if !seen.iter().any(|e| e.eq_ignore_ascii_case(v)) {
+                    seen.push(v.clone());
+                }
+            }
+        }
+        seen
+    }
+
+    /// Adopt `preset` into the in-memory config, make it active, and rebuild the
+    /// view. `replacing` is the pre-edit name (from `FilterDraft::original`): if
+    /// the name changed, the old entry is dropped so a rename doesn't duplicate.
+    /// Otherwise a same-named preset is overwritten in place, else appended.
+    /// Returns the index it landed at. Disk persistence is the caller's job.
+    pub fn save_preset(&mut self, preset: Preset, replacing: Option<String>) -> usize {
+        let keep = self.selected_id();
+        if let Some(orig) = replacing
+            && !orig.eq_ignore_ascii_case(&preset.name)
+        {
+            self.config
+                .presets
+                .retain(|p| !p.name.eq_ignore_ascii_case(&orig));
+        }
+        let idx = match self
+            .config
+            .presets
+            .iter()
+            .position(|p| p.name.eq_ignore_ascii_case(&preset.name))
+        {
+            Some(i) => {
+                self.config.presets[i] = preset;
+                i
+            }
+            None => {
+                self.config.presets.push(preset);
+                self.config.presets.len() - 1
+            }
+        };
+        self.active_preset = idx;
+        self.recompute(keep);
+        idx
+    }
+
+    /// Remove the preset at `index`, clamp the active selection, and rebuild the
+    /// view. Refuses to remove the last preset (the list must stay non-empty, as
+    /// `recompute` always indexes one). Returns whether a preset was removed.
+    pub fn delete_preset(&mut self, index: usize) -> bool {
+        if self.config.presets.len() <= 1 || index >= self.config.presets.len() {
+            return false;
+        }
+        let keep = self.selected_id();
+        self.config.presets.remove(index);
+        if self.active_preset >= self.config.presets.len() {
+            self.active_preset = self.config.presets.len() - 1;
+        }
+        self.recompute(keep);
+        true
+    }
+
     // --- live filter ---
 
     pub fn enter_filter(&mut self) {
@@ -325,6 +549,168 @@ mod tests {
 
         // Unknown ids are a no-op, not a panic.
         assert_eq!(app.set_item_status("missing", Some("x".into())), None);
+    }
+
+    #[test]
+    fn filter_draft_builds_preset_from_checked_options() {
+        let mut draft = FilterDraft {
+            name: "   ".into(),
+            statuses: vec![("Refine".into(), true), ("Done".into(), false)],
+            labels: vec![("Frontend".into(), true)],
+            assignees: vec![("me".into(), false)],
+            focus: 0,
+            original: None,
+        };
+        // A blank name yields no preset.
+        assert!(draft.to_preset().is_none());
+
+        draft.name = "backend-mine".into();
+        let p = draft.to_preset().expect("named draft builds a preset");
+        assert_eq!(p.name, "backend-mine");
+        assert_eq!(p.include.statuses, vec!["Refine".to_string()]);
+        assert_eq!(p.include.labels, vec!["Frontend".to_string()]);
+        assert!(
+            p.include.assignees.is_empty(),
+            "unchecked group stays empty"
+        );
+    }
+
+    #[test]
+    fn filter_draft_toggle_and_focus_walk_groups() {
+        let mut draft = FilterDraft {
+            name: String::new(),
+            statuses: vec![("s0".into(), false)],
+            labels: vec![("l0".into(), false)],
+            assignees: vec![("a0".into(), false)],
+            focus: 0,
+            original: None,
+        };
+        // focus 0 is the name field: toggling does nothing.
+        draft.toggle_focused();
+        assert!(!draft.statuses[0].1);
+
+        // focus 2 = second option row = first label; focus 3 = the assignee.
+        draft.focus = 2;
+        draft.toggle_focused();
+        assert!(draft.labels[0].1);
+        draft.focus = 3;
+        draft.toggle_focused();
+        assert!(draft.assignees[0].1);
+
+        // move_focus clamps to [0, option_count].
+        draft.focus = 0;
+        draft.move_focus(-1);
+        assert_eq!(draft.focus, 0);
+        draft.move_focus(99);
+        assert_eq!(draft.focus, draft.option_count());
+    }
+
+    #[test]
+    fn filter_draft_jump_section_skips_empty_groups() {
+        let mut draft = FilterDraft {
+            name: String::new(),
+            statuses: vec![("s0".into(), false), ("s1".into(), false)],
+            labels: vec![], // empty — jumps skip it
+            assignees: vec![("a0".into(), false)],
+            focus: 0,
+            original: None,
+        };
+        // Section starts: name=0, status=1, assignees=3 (labels absent).
+        draft.jump_section(1);
+        assert_eq!(draft.focus, 1, "name → first status");
+        draft.jump_section(1);
+        assert_eq!(draft.focus, 3, "status → assignees, skipping empty labels");
+        draft.jump_section(1);
+        assert_eq!(draft.focus, 3, "clamps at the last section");
+
+        // From the middle of a group, back-jump lands on that group's start first.
+        draft.focus = 2; // second status row
+        draft.jump_section(-1);
+        assert_eq!(draft.focus, 0, "mid-status → name");
+    }
+
+    #[test]
+    fn save_preset_replaces_by_name_and_activates() {
+        let mut app = App::new(vec![item("a", "Refine")], ProjectConfig::travel_smart());
+        let before = app.preset_count();
+
+        // A new preset appends and becomes active.
+        let idx = app.save_preset(
+            Preset {
+                name: "custom".into(),
+                include: Filter::default(),
+            },
+            None,
+        );
+        assert_eq!(idx, before);
+        assert_eq!(app.active_preset, idx);
+        assert_eq!(app.preset_count(), before + 1);
+
+        // Re-saving under the same name (case-insensitive) replaces in place.
+        let idx2 = app.save_preset(
+            Preset {
+                name: "CUSTOM".into(),
+                include: Filter {
+                    statuses: vec!["Refine".into()],
+                    ..Default::default()
+                },
+            },
+            None,
+        );
+        assert_eq!(idx2, idx, "same name replaces, not appends");
+        assert_eq!(app.preset_count(), before + 1);
+        assert_eq!(
+            app.config.presets[idx].include.statuses,
+            vec!["Refine".to_string()]
+        );
+    }
+
+    #[test]
+    fn save_preset_rename_drops_the_old_entry() {
+        let mut app = App::new(vec![item("a", "Refine")], ProjectConfig::travel_smart());
+        let start = app.preset_count();
+        let idx = app.save_preset(
+            Preset {
+                name: "draft".into(),
+                include: Filter::default(),
+            },
+            None,
+        );
+        assert_eq!(app.preset_count(), start + 1);
+
+        // Editing "draft" → "final" replaces in place, not adds a duplicate.
+        app.save_preset(
+            Preset {
+                name: "final".into(),
+                include: Filter::default(),
+            },
+            Some("draft".into()),
+        );
+        assert_eq!(app.preset_count(), start + 1, "rename doesn't add an entry");
+        assert!(
+            !app.config.presets.iter().any(|p| p.name == "draft"),
+            "old name is gone"
+        );
+        assert!(app.config.presets.iter().any(|p| p.name == "final"));
+        let _ = idx;
+    }
+
+    #[test]
+    fn delete_preset_removes_and_guards_last() {
+        let mut app = App::new(vec![item("a", "Refine")], ProjectConfig::travel_smart());
+        let start = app.preset_count();
+        assert!(start > 1, "fixture has several presets");
+
+        // Delete every preset but one; the final delete is refused.
+        for _ in 0..start {
+            app.delete_preset(app.active_preset);
+        }
+        assert_eq!(app.preset_count(), 1, "can't delete the last preset");
+        assert!(!app.delete_preset(0), "refusing returns false");
+        assert!(
+            app.active_preset < app.preset_count(),
+            "selection stays valid"
+        );
     }
 
     #[test]

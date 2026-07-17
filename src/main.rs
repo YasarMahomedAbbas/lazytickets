@@ -199,6 +199,60 @@ async fn run(terminal: &mut DefaultTerminal, app: &mut App) -> anyhow::Result<()
                         // pickers navigate with j/k and act on Enter.
                         if matches!(app.modal, Modal::Message(_) | Modal::Help) {
                             app.modal = Modal::None;
+                        } else if matches!(app.modal, Modal::FilterBuild(_)) {
+                            match key.code {
+                                KeyCode::Esc => app.modal = Modal::None,
+                                KeyCode::Enter => reschedule = save_current_filter(app),
+                                KeyCode::Tab | KeyCode::Down => {
+                                    if let Modal::FilterBuild(d) = &mut app.modal {
+                                        d.move_focus(1);
+                                    }
+                                }
+                                KeyCode::BackTab | KeyCode::Up => {
+                                    if let Modal::FilterBuild(d) = &mut app.modal {
+                                        d.move_focus(-1);
+                                    }
+                                }
+                                // Arrows jump by section and work anywhere, including
+                                // the name field (where h/l are literal text).
+                                KeyCode::Right => {
+                                    if let Modal::FilterBuild(d) = &mut app.modal {
+                                        d.jump_section(1);
+                                    }
+                                }
+                                KeyCode::Left => {
+                                    if let Modal::FilterBuild(d) = &mut app.modal {
+                                        d.jump_section(-1);
+                                    }
+                                }
+                                KeyCode::Backspace => {
+                                    if let Modal::FilterBuild(d) = &mut app.modal
+                                        && d.focus == 0
+                                    {
+                                        d.name.pop();
+                                    }
+                                }
+                                // On the name row every printable key edits the name;
+                                // on an option row j/k move, h/l jump sections, and
+                                // space toggles.
+                                KeyCode::Char(c) => {
+                                    if let Modal::FilterBuild(d) = &mut app.modal {
+                                        if d.focus == 0 {
+                                            d.name.push(c);
+                                        } else {
+                                            match c {
+                                                ' ' => d.toggle_focused(),
+                                                'j' => d.move_focus(1),
+                                                'k' => d.move_focus(-1),
+                                                'l' => d.jump_section(1),
+                                                'h' => d.jump_section(-1),
+                                                _ => {}
+                                            }
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
                         } else {
                             match key.code {
                                 KeyCode::Char('j') | KeyCode::Down => app.modal_move(1),
@@ -208,6 +262,8 @@ async fn run(terminal: &mut DefaultTerminal, app: &mut App) -> anyhow::Result<()
                                         begin_status_move(app, id, status, &write_tx).await;
                                     } else if matches!(app.modal, Modal::Confirm { .. }) {
                                         confirm_start_work(app, &write_tx).await;
+                                    } else if matches!(app.modal, Modal::ConfirmDelete { .. }) {
+                                        reschedule = confirm_delete_preset(app);
                                     } else if let Modal::ProjectPick { names, selected } = &app.modal {
                                         let selected = *selected;
                                         if selected >= names.len() {
@@ -222,6 +278,9 @@ async fn run(terminal: &mut DefaultTerminal, app: &mut App) -> anyhow::Result<()
                                 }
                                 KeyCode::Char('y') if matches!(app.modal, Modal::Confirm { .. }) => {
                                     confirm_start_work(app, &write_tx).await;
+                                }
+                                KeyCode::Char('y') if matches!(app.modal, Modal::ConfirmDelete { .. }) => {
+                                    reschedule = confirm_delete_preset(app);
                                 }
                                 KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('n') => {
                                     app.modal = Modal::None;
@@ -241,6 +300,9 @@ async fn run(terminal: &mut DefaultTerminal, app: &mut App) -> anyhow::Result<()
                                     reschedule = app.set_preset(c as usize - '1' as usize);
                                 }
                                 KeyCode::Char('/') => app.enter_filter(),
+                                KeyCode::Char('f') => app.open_filter_builder(),
+                                KeyCode::Char('e') => app.open_filter_editor(),
+                                KeyCode::Char('d') => begin_delete_preset(app),
                                 KeyCode::Char('s') => begin_start_work(app).await,
                                 KeyCode::Char('m') => open_status_mover(app).await,
                                 KeyCode::Char('p') => open_project_picker(app),
@@ -474,6 +536,109 @@ async fn open_in_browser(app: &mut App) {
         }
         _ => app.modal = Modal::Message("Draft item — no issue to open in the browser.".into()),
     }
+}
+
+/// Commit the open filter builder: apply the drafted preset in-memory (making it
+/// active) and persist it to `config.toml`. A blank name is a no-op that leaves
+/// the builder open. Returns whether the view changed (caller reschedules detail).
+fn save_current_filter(app: &mut App) -> bool {
+    let (preset, replacing) = match &app.modal {
+        Modal::FilterBuild(draft) => (draft.to_preset(), draft.original.clone()),
+        _ => (None, None),
+    };
+    let Some(preset) = preset else {
+        // Empty name — keep the builder open so the user can fill it in.
+        return false;
+    };
+
+    app.save_preset(preset.clone(), replacing.clone());
+    app.modal = Modal::None;
+
+    // In-memory state is already updated; surface a disk-write failure without
+    // losing the session's filter.
+    if let Err(e) = persist_preset(&app.config.name, &preset, replacing.as_deref()) {
+        app.modal = Modal::Message(format!("Filter is active for this session, but:\n{e}"));
+    }
+    true
+}
+
+/// Write `preset` into the on-disk config under `project_name`. `replacing` is
+/// the pre-edit name: on a rename the old entry is dropped first. Otherwise a
+/// same-named preset is overwritten in place, else appended.
+fn persist_preset(
+    project_name: &str,
+    preset: &config::schema::Preset,
+    replacing: Option<&str>,
+) -> anyhow::Result<()> {
+    use anyhow::Context;
+    let mut cfg = Config::load()?;
+    let project = cfg
+        .projects
+        .iter_mut()
+        .find(|p| p.name == project_name)
+        .context("this board isn't in your config yet — the filter can't be saved to disk")?;
+    if let Some(orig) = replacing
+        && !orig.eq_ignore_ascii_case(&preset.name)
+    {
+        project
+            .presets
+            .retain(|p| !p.name.eq_ignore_ascii_case(orig));
+    }
+    match project
+        .presets
+        .iter()
+        .position(|p| p.name.eq_ignore_ascii_case(&preset.name))
+    {
+        Some(i) => project.presets[i] = preset.clone(),
+        None => project.presets.push(preset.clone()),
+    }
+    cfg.save()
+}
+
+/// Open the delete-confirm modal for the active preset, or refuse (with a note)
+/// when it's the only one left — the preset list must stay non-empty.
+fn begin_delete_preset(app: &mut App) {
+    if app.preset_count() <= 1 {
+        app.modal =
+            Modal::Message("Can't delete the only filter — a board needs at least one.".into());
+        return;
+    }
+    let index = app.active_preset;
+    let name = app.preset_name(index).to_string();
+    app.modal = Modal::ConfirmDelete { index, name };
+}
+
+/// Delete the preset named by the open `ConfirmDelete` modal, in memory and on
+/// disk, then rebuild the view. Returns whether the view changed.
+fn confirm_delete_preset(app: &mut App) -> bool {
+    let (index, name) = match &app.modal {
+        Modal::ConfirmDelete { index, name } => (*index, name.clone()),
+        _ => return false,
+    };
+    if !app.delete_preset(index) {
+        app.modal = Modal::None;
+        return false;
+    }
+    app.modal = Modal::None;
+    if let Err(e) = persist_delete(&app.config.name, &name) {
+        app.modal = Modal::Message(format!("Filter removed for this session, but:\n{e}"));
+    }
+    true
+}
+
+/// Remove the preset named `preset_name` from the on-disk config under `project_name`.
+fn persist_delete(project_name: &str, preset_name: &str) -> anyhow::Result<()> {
+    use anyhow::Context;
+    let mut cfg = Config::load()?;
+    let project = cfg
+        .projects
+        .iter_mut()
+        .find(|p| p.name == project_name)
+        .context("this board isn't in your config yet — nothing to remove from disk")?;
+    project
+        .presets
+        .retain(|p| !p.name.eq_ignore_ascii_case(preset_name));
+    cfg.save()
 }
 
 /// Open the project switcher, listing every configured project (freshly reloaded

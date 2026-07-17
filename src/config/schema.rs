@@ -233,6 +233,16 @@ mod tests {
         // Frontend but Done is excluded (preset doesn't name Done).
         assert!(!cfg.keeps(frontend, &item("Done", &["Frontend"], &[])));
 
+        // A preset that names Done reveals it despite the exclude list.
+        let done_preset = Preset {
+            name: "done".into(),
+            include: Filter {
+                statuses: vec!["Done".into()],
+                ..Default::default()
+            },
+        };
+        assert!(cfg.keeps(&done_preset, &item("Done", &["Frontend"], &[])));
+
         // `mine` matches on assignee.
         let mine = &cfg.presets[1];
         assert!(cfg.keeps(mine, &item("Refine", &[], &["YasarMahomedAbbas"])));
