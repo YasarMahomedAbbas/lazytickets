@@ -1,7 +1,9 @@
 mod app;
+mod attach;
 mod cache;
 mod config;
 mod gh;
+mod images;
 mod model;
 mod poll;
 mod tmux;
@@ -21,6 +23,9 @@ use tokio::sync::mpsc;
 /// A completed detail fetch: the selection generation it was for, the item id it
 /// belongs to (for the cache), and the result.
 type DetailMsg = (u64, String, anyhow::Result<gh::issue::IssueDetail>);
+
+/// A completed image fetch+decode: the source URL and the decoded image (or error).
+type ImageMsg = (String, anyhow::Result<image::DynamicImage>);
 
 /// A completed background status write: the item id, the status to revert to if
 /// it failed, and the outcome.
@@ -155,6 +160,16 @@ async fn load_board(owner: &str, number: u32) -> anyhow::Result<Vec<Item>> {
 }
 
 async fn run(terminal: &mut DefaultTerminal, app: &mut App) -> anyhow::Result<()> {
+    // Detect the terminal's graphics protocol (Kitty/sixel/iTerm2, else
+    // half-blocks) *before* the input reader thread starts — the query's reply
+    // arrives on stdin, which that thread would otherwise swallow.
+    app.images.picker = Some(
+        ratatui_image::picker::Picker::from_query_stdio()
+            .unwrap_or_else(|_| ratatui_image::picker::Picker::halfblocks()),
+    );
+    // Token for authorised attachment fetches (public images work without it).
+    let image_token = gh::auth_token().await;
+
     // Input: a blocking reader thread feeding an async channel, so key handling
     // never blocks the tokio runtime (busy with detail fetches).
     let (input_tx, mut input_rx) = mpsc::unbounded_channel::<Event>();
@@ -168,8 +183,10 @@ async fn run(terminal: &mut DefaultTerminal, app: &mut App) -> anyhow::Result<()
 
     // Detail fetches: debounced and generation-guarded.
     let (detail_tx, mut detail_rx) = mpsc::unbounded_channel::<DetailMsg>();
+    // Attachment fetches: decoded off the UI thread, keyed by URL.
+    let (image_tx, mut image_rx) = mpsc::unbounded_channel::<ImageMsg>();
     let generation = Arc::new(AtomicU64::new(0));
-    schedule_detail(app, &generation, &detail_tx);
+    schedule_detail(app, &generation, &detail_tx, &image_tx, &image_token);
 
     // Background status writes (optimistic; reconciled on completion).
     let (write_tx, mut write_rx) = mpsc::unbounded_channel::<WriteMsg>();
@@ -303,6 +320,11 @@ async fn run(terminal: &mut DefaultTerminal, app: &mut App) -> anyhow::Result<()
                                 KeyCode::Char('f') => app.open_filter_builder(),
                                 KeyCode::Char('e') => app.open_filter_editor(),
                                 KeyCode::Char('d') => begin_delete_preset(app),
+                                KeyCode::Char('l') => app.toggle_labels(),
+                                KeyCode::Char('J') => app.scroll_detail(2),
+                                KeyCode::Char('K') => app.scroll_detail(-2),
+                                KeyCode::PageDown => app.scroll_detail(12),
+                                KeyCode::PageUp => app.scroll_detail(-12),
                                 KeyCode::Char('s') => begin_start_work(app).await,
                                 KeyCode::Char('m') => open_status_mover(app).await,
                                 KeyCode::Char('p') => open_project_picker(app),
@@ -325,7 +347,7 @@ async fn run(terminal: &mut DefaultTerminal, app: &mut App) -> anyhow::Result<()
                         }
                     }
                     if reschedule {
-                        schedule_detail(app, &generation, &detail_tx);
+                        schedule_detail(app, &generation, &detail_tx, &image_tx, &image_token);
                     }
                 }
             }
@@ -336,11 +358,23 @@ async fn run(terminal: &mut DefaultTerminal, app: &mut App) -> anyhow::Result<()
                         app.detail_cache.insert(id, d.clone());
                     }
                     if g == generation.load(Ordering::SeqCst) {
-                        app.detail = match res {
-                            Ok(d) => DetailState::Loaded(d),
-                            Err(e) => DetailState::Error(e.to_string()),
-                        };
+                        match res {
+                            Ok(d) => {
+                                app.show_detail(d);
+                                request_images(app, &image_tx, &image_token);
+                            }
+                            Err(e) => app.detail = DetailState::Error(e.to_string()),
+                        }
                     }
+                }
+            }
+            maybe_image = image_rx.recv() => {
+                if let Some((url, res)) = maybe_image {
+                    let entry = match res {
+                        Ok(img) => images::ImageEntry::Ready { img, proto: None, cols: 0, rows: 0 },
+                        Err(e) => images::ImageEntry::Failed(one_line(&e)),
+                    };
+                    app.images.cache.insert(url, entry);
                 }
             }
             maybe_write = write_rx.recv() => {
@@ -376,8 +410,12 @@ fn schedule_detail(
     app: &mut App,
     generation: &Arc<AtomicU64>,
     detail_tx: &mpsc::UnboundedSender<DetailMsg>,
+    image_tx: &mpsc::UnboundedSender<ImageMsg>,
+    image_token: &Option<String>,
 ) {
     let g = generation.fetch_add(1, Ordering::SeqCst) + 1;
+    // New selection → detail starts at the top.
+    app.detail_scroll = 0;
 
     let target = app
         .selected()
@@ -394,8 +432,9 @@ fn schedule_detail(
         }
     };
 
-    if let Some(cached) = app.detail_cache.get(&id) {
-        app.detail = DetailState::Loaded(cached.clone());
+    if let Some(cached) = app.detail_cache.get(&id).cloned() {
+        app.show_detail(cached);
+        request_images(app, image_tx, image_token);
         return;
     }
 
@@ -404,7 +443,8 @@ fn schedule_detail(
         && c.age() < cache::DETAIL_TTL
     {
         app.detail_cache.insert(id.clone(), c.value.clone());
-        app.detail = DetailState::Loaded(c.value);
+        app.show_detail(c.value);
+        request_images(app, image_tx, image_token);
         return;
     }
 
@@ -422,6 +462,45 @@ fn schedule_detail(
         }
         let _ = tx.send((g, id, res));
     });
+}
+
+/// Kick off a fetch+decode for every image in the current detail that isn't
+/// already cached. Each runs on a blocking pool thread (ureq + image decode are
+/// blocking) and reports back on `image_tx`. Skipped entirely without a picker —
+/// there'd be nothing able to render the result.
+fn request_images(
+    app: &mut App,
+    image_tx: &mpsc::UnboundedSender<ImageMsg>,
+    image_token: &Option<String>,
+) {
+    if !app.images.enabled() {
+        return;
+    }
+    let urls = match &app.detail {
+        DetailState::Loaded(d) => attach::image_urls(&d.body),
+        _ => return,
+    };
+
+    for url in urls {
+        if app.images.cache.contains_key(&url) {
+            continue; // in flight, ready, or already failed
+        }
+        app.images
+            .cache
+            .insert(url.clone(), images::ImageEntry::Loading);
+        let tx = image_tx.clone();
+        let token = image_token.clone();
+        tokio::task::spawn_blocking(move || {
+            let res = attach::fetch_image(&url, token.as_deref())
+                .and_then(|bytes| image::load_from_memory(&bytes).map_err(anyhow::Error::from));
+            let _ = tx.send((url, res));
+        });
+    }
+}
+
+/// Collapse an error chain to a single line for the inline image placeholder.
+fn one_line(err: &anyhow::Error) -> String {
+    err.to_string().lines().next().unwrap_or("").to_string()
 }
 
 /// Validate the start-work preconditions (real issue, linked skill, tmux session,

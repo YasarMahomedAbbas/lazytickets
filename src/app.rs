@@ -1,7 +1,9 @@
 //! Application state, selection, and the filtered view. Rendering lives in `ui`.
 
+use crate::attach::{self, ContentPart};
 use crate::config::schema::{Filter, Preset, ProjectConfig};
 use crate::gh::issue::IssueDetail;
+use crate::images::Images;
 use crate::model::Item;
 use fuzzy_matcher::FuzzyMatcher;
 use fuzzy_matcher::skim::SkimMatcherV2;
@@ -171,6 +173,17 @@ pub struct App {
     pub status_field: Option<crate::gh::write::StatusField>,
     /// Whether the token has the `project` write scope; checked once.
     pub project_scope: Option<bool>,
+    /// Whether the list shows each card's labels inline. Toggled with `l`; a view
+    /// preference, so it survives board switches.
+    pub show_labels: bool,
+    /// Inline-image state (picker + decoded/encoded cache) for the detail pane.
+    pub images: Images,
+    /// The current issue body split into text/image runs, for inline rendering.
+    /// Rebuilt whenever a detail loads; empty when nothing is loaded.
+    pub detail_parts: Vec<ContentPart>,
+    /// Row scroll offset of the detail pane; reset to 0 on each new selection and
+    /// clamped to the content height at render time.
+    pub detail_scroll: u16,
 }
 
 impl App {
@@ -188,14 +201,31 @@ impl App {
             modal: Modal::None,
             status_field: None,
             project_scope: None,
+            show_labels: false,
+            images: Images::new(None),
+            detail_parts: Vec::new(),
+            detail_scroll: 0,
         };
         app.recompute(None);
         app
     }
 
-    /// Title shown on the list pane.
-    pub fn board_label(&self) -> String {
-        format!("{} #{}", self.config.name, self.config.board.number)
+    /// Flip inline labels in the list on/off.
+    pub fn toggle_labels(&mut self) {
+        self.show_labels = !self.show_labels;
+    }
+
+    /// Show a freshly-loaded issue: cache nothing here, just move it into the
+    /// detail state and (re)derive the text/image runs the pane renders.
+    pub fn show_detail(&mut self, d: IssueDetail) {
+        self.detail_parts = attach::split_content(&d.body);
+        self.detail = DetailState::Loaded(d);
+    }
+
+    /// Scroll the detail pane by `delta` rows (negative = up). Clamped to 0 here;
+    /// the upper bound is applied at render time, where the content height is known.
+    pub fn scroll_detail(&mut self, delta: i32) {
+        self.detail_scroll = (self.detail_scroll as i32 + delta).max(0) as u16;
     }
 
     /// Swap the active project: adopt a new config + freshly-fetched board and
@@ -209,6 +239,8 @@ impl App {
         self.filter_query.clear();
         self.detail = DetailState::Empty;
         self.detail_cache.clear();
+        self.detail_parts.clear();
+        self.detail_scroll = 0;
         self.status_field = None;
         self.modal = Modal::None;
         self.recompute(None);

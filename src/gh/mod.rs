@@ -39,6 +39,15 @@ pub async fn viewer_login() -> Result<String> {
     Ok(String::from_utf8_lossy(&bytes).trim().to_string())
 }
 
+/// The stored OAuth token (`gh auth token`), used to authorise attachment fetches.
+/// `None` if gh has no token or the command fails — callers fall back to an
+/// unauthenticated fetch, which still works for public `user-images` URLs.
+pub async fn auth_token() -> Option<String> {
+    let bytes = run(&["auth", "token"]).await.ok()?;
+    let tok = String::from_utf8_lossy(&bytes).trim().to_string();
+    (!tok.is_empty()).then_some(tok)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
