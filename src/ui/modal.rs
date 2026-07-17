@@ -326,7 +326,7 @@ pub fn render_notice(frame: &mut Frame, msg: &str) {
 fn render_help(frame: &mut Frame) {
     let rows = [
         ("j / k · ↓ / ↑", "move selection"),
-        ("J / K · PgDn/PgUp", "scroll detail (images)"),
+        ("J / K · C-d / C-u", "scroll detail (half-page)"),
         ("Tab / S-Tab · 1-9", "switch preset tab"),
         ("/", "live fuzzy filter (Esc clears)"),
         ("l", "toggle inline labels"),

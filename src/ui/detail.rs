@@ -32,7 +32,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         .iter()
         .any(|p| matches!(p, ContentPart::Image(_)));
     let hint = if has_images && app.images.enabled() {
-        " detail · J/K scroll "
+        " detail · J/K · C-d/C-u scroll "
     } else {
         " detail "
     };
@@ -42,6 +42,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         .border_style(Style::default().fg(NORD_MUTED));
 
     let inner = block.inner(area);
+    // Record the pane height so Ctrl+D/Ctrl+U can scroll by a half-page.
+    app.detail_view_height = inner.height;
     frame.render_widget(block, area);
     // Wipe the content region every frame so a scrolled-out Kitty image (anchored
     // to now-blank cells) doesn't linger.

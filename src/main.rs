@@ -14,7 +14,7 @@ use config::Config;
 use config::resolver::{self, Resolution};
 use model::Item;
 use ratatui::DefaultTerminal;
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -319,6 +319,14 @@ async fn run(terminal: &mut DefaultTerminal, app: &mut App) -> anyhow::Result<()
                                 KeyCode::Char('/') => app.enter_filter(),
                                 KeyCode::Char('f') => app.open_filter_builder(),
                                 KeyCode::Char('e') => app.open_filter_editor(),
+                                // Ctrl+D/U scroll the detail pane by a half-page
+                                // (vim-style); plain `d` still deletes the preset.
+                                KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                    app.scroll_detail_half(1);
+                                }
+                                KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                    app.scroll_detail_half(-1);
+                                }
                                 KeyCode::Char('d') => begin_delete_preset(app),
                                 KeyCode::Char('l') => app.toggle_labels(),
                                 KeyCode::Char('J') => app.scroll_detail(2),

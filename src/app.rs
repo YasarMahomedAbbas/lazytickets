@@ -184,6 +184,9 @@ pub struct App {
     /// Row scroll offset of the detail pane; reset to 0 on each new selection and
     /// clamped to the content height at render time.
     pub detail_scroll: u16,
+    /// Height (rows) of the detail pane's inner content area, recorded each render.
+    /// Drives the half-page Ctrl+D/Ctrl+U scroll; 0 until the first frame.
+    pub detail_view_height: u16,
 }
 
 impl App {
@@ -205,6 +208,7 @@ impl App {
             images: Images::new(None),
             detail_parts: Vec::new(),
             detail_scroll: 0,
+            detail_view_height: 0,
         };
         app.recompute(None);
         app
@@ -226,6 +230,14 @@ impl App {
     /// the upper bound is applied at render time, where the content height is known.
     pub fn scroll_detail(&mut self, delta: i32) {
         self.detail_scroll = (self.detail_scroll as i32 + delta).max(0) as u16;
+    }
+
+    /// Scroll the detail pane by half its visible height (vim `C-d`/`C-u`);
+    /// `dir` is +1 for down, -1 for up. At least one row before the first frame
+    /// records a real height.
+    pub fn scroll_detail_half(&mut self, dir: i32) {
+        let half = (self.detail_view_height / 2).max(1) as i32;
+        self.scroll_detail(dir * half);
     }
 
     /// Swap the active project: adopt a new config + freshly-fetched board and
