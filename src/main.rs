@@ -311,8 +311,8 @@ async fn run(terminal: &mut DefaultTerminal, app: &mut App) -> anyhow::Result<()
                                 KeyCode::Char('q') => break,
                                 KeyCode::Char('j') | KeyCode::Down => reschedule = app.next(),
                                 KeyCode::Char('k') | KeyCode::Up => reschedule = app.prev(),
-                                KeyCode::Tab => reschedule = app.cycle_preset(1),
-                                KeyCode::BackTab => reschedule = app.cycle_preset(-1),
+                                KeyCode::Char('l') | KeyCode::Tab => reschedule = app.cycle_preset(1),
+                                KeyCode::Char('h') | KeyCode::BackTab => reschedule = app.cycle_preset(-1),
                                 KeyCode::Char(c @ '1'..='9') => {
                                     reschedule = app.set_preset(c as usize - '1' as usize);
                                 }
@@ -328,7 +328,7 @@ async fn run(terminal: &mut DefaultTerminal, app: &mut App) -> anyhow::Result<()
                                     app.scroll_detail_half(-1);
                                 }
                                 KeyCode::Char('d') => begin_delete_preset(app),
-                                KeyCode::Char('l') => app.toggle_labels(),
+                                KeyCode::Char('L') => app.toggle_labels(),
                                 KeyCode::Char('J') => app.scroll_detail(2),
                                 KeyCode::Char('K') => app.scroll_detail(-2),
                                 KeyCode::PageDown => app.scroll_detail(12),
