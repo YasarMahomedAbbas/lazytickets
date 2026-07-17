@@ -28,13 +28,10 @@ pub fn normalize_remote(url: &str) -> Option<String> {
     let url = url.trim();
 
     // Isolate the "github.com<sep>owner/repo" tail, dropping any scheme/credentials.
-    let rest = if let Some(idx) = url.find("github.com") {
-        // After "github.com" comes either ':' (scp-style) or '/' (url path).
-        let after = &url[idx + "github.com".len()..];
-        after.trim_start_matches([':', '/'])
-    } else {
-        return None;
-    };
+    // After "github.com" comes either ':' (scp-style) or '/' (url path).
+    let idx = url.find("github.com")?;
+    let after = &url[idx + "github.com".len()..];
+    let rest = after.trim_start_matches([':', '/']);
 
     // rest is now "owner/repo(.git)(/...)". Take the first two path segments.
     let mut parts = rest.split('/').filter(|s| !s.is_empty());
