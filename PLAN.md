@@ -220,13 +220,18 @@ name = "travel-smart"
 repos = ["WhiteWolfStudio/travel-smart"]
 board = { owner = "WhiteWolfStudio", number = 6 }
 target_session = "travelsmart"      # tmux session for start-work
-claude_subdir  = "Frontend"         # where claude runs
+claude_subdir  = "Frontend"         # subdir Claude boots in (`s`/`t`); wizard auto-detects a subdir CLAUDE.md
 status_order = ["Refine", "Create Contract", "Ready To Implement", "In progress", "In review", "Done"]
 exclude_statuses = ["Done"]         # hidden by default; a preset naming a status reveals it
 
 [projects.skill]
 start = "frontend-start-ticket"     # or global ~/.claude/skills/ fallback
 create = "create-ticket"
+
+# `t` worktree-start bootstrap: make a fresh worktree runnable
+[projects.worktree]
+copy  = [".env", "Frontend/.env"]   # gitignored files copied from the main checkout into the worktree
+setup = ["npm install"]             # commands run in the new session before Claude starts
 
 [[projects.presets]]
 name = "mine"

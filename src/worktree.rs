@@ -81,6 +81,29 @@ pub async fn add(repo_root: &Path, path: &Path, branch: &str) -> Result<()> {
     Ok(())
 }
 
+/// Copy each `rel` path from the main checkout at `repo_root` into `worktree` at
+/// the same relative location (creating parent dirs), seeding gitignored files a
+/// fresh worktree lacks. A source that doesn't exist is skipped silently — the
+/// config lists what a worktree *might* need, not what must be present. Returns
+/// the relative paths actually copied.
+pub fn seed_files(repo_root: &Path, worktree: &Path, rels: &[String]) -> Result<Vec<String>> {
+    let mut copied = Vec::new();
+    for rel in rels {
+        let src = repo_root.join(rel);
+        if !src.is_file() {
+            continue;
+        }
+        let dst = worktree.join(rel);
+        if let Some(parent) = dst.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating {} for the worktree", parent.display()))?;
+        }
+        std::fs::copy(&src, &dst).with_context(|| format!("copying {rel} into the worktree"))?;
+        copied.push(rel.clone());
+    }
+    Ok(copied)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -104,5 +127,43 @@ mod tests {
     #[test]
     fn worktree_path_needs_a_parent() {
         assert_eq!(worktree_path(Path::new("/"), "issue-1"), None);
+    }
+
+    #[test]
+    fn seed_copies_present_sources_and_skips_missing() {
+        // A throwaway repo/worktree pair under the temp dir. Fixed unique name so
+        // the test stays deterministic (no rng); cleaned up at the end.
+        let base = std::env::temp_dir().join("lazytickets_seed_test");
+        let _ = std::fs::remove_dir_all(&base);
+        let root = base.join("repo");
+        let tree = base.join("worktree");
+        std::fs::create_dir_all(root.join("Frontend")).unwrap();
+        std::fs::create_dir_all(&tree).unwrap();
+        std::fs::write(root.join(".env"), "ROOT=1").unwrap();
+        std::fs::write(root.join("Frontend/.env"), "FE=1").unwrap();
+
+        let rels = vec![
+            ".env".to_string(),
+            "Frontend/.env".to_string(),
+            "missing.env".to_string(), // skipped, not an error
+        ];
+        let copied = seed_files(&root, &tree, &rels).unwrap();
+
+        assert_eq!(
+            copied,
+            vec![".env".to_string(), "Frontend/.env".to_string()]
+        );
+        assert_eq!(
+            std::fs::read_to_string(tree.join(".env")).unwrap(),
+            "ROOT=1"
+        );
+        // Nested parent dir was created under the worktree.
+        assert_eq!(
+            std::fs::read_to_string(tree.join("Frontend/.env")).unwrap(),
+            "FE=1"
+        );
+        assert!(!tree.join("missing.env").exists());
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

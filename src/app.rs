@@ -39,7 +39,9 @@ pub enum Modal {
     },
     /// Awaiting y/n before creating a worktree and starting the ticket in its own
     /// detached tmux session (`t`). `path` is the display path of the worktree;
-    /// `base` is the branch it will fork from (so you can confirm you're on main).
+    /// `base` is the branch it will fork from (so you can confirm you're on main);
+    /// `subdir` is the configured `claude_subdir` Claude boots inside, if any;
+    /// `bootstrap` is a one-line summary of the seed/setup steps, if configured.
     WorktreeConfirm {
         item_id: String,
         issue: u64,
@@ -47,6 +49,8 @@ pub enum Modal {
         session: String,
         path: String,
         base: String,
+        subdir: Option<String>,
+        bootstrap: Option<String>,
     },
     /// Status column picker (M6). `selected` indexes `options`.
     StatusMove {

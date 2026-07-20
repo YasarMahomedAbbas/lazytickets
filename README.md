@@ -69,6 +69,53 @@ lazytickets        # installed
 On first run in an unknown repo, an in-TUI wizard maps it to a project and writes
 `~/.config/lazytickets/config.toml`. Press `?` for the full keybinding overlay.
 
+## Starting work on a ticket
+
+Two ways to hand a ticket to Claude Code:
+
+- **`s` — drive the current session.** Clears the `claude` window in your current tmux
+  session and tells it to start the ticket. One at a time; guarded so it never interrupts
+  a busy Claude.
+- **`t` — start in a fresh worktree + session.** Creates a git worktree for the ticket on
+  its own branch, opens a **new detached tmux session** for it, and starts Claude there.
+  Because every ticket is isolated, there's no busy-guard — walk your backlog and fire them
+  all off in parallel, each in its own session (`issue-<n>`). The confirm dialog shows the
+  branch it forks from, where Claude boots, and any bootstrap steps before you commit.
+
+Worktrees are created at `../worktrees/issue-<n>` (a sibling of the repo) off your current
+branch. Cleanup is manual for now: `git worktree remove <path>` and `tmux kill-session -t issue-<n>`.
+
+## Configuration
+
+The wizard writes a `[[projects]]` block; a few optional keys tune the `t` flow. A fresh
+worktree only contains *tracked* files, so gitignored files (like `.env`) and installed
+dependencies aren't there — these bring it up to a runnable state:
+
+```toml
+[[projects]]
+name  = "MyProject"
+repos = ["owner/repo"]
+claude_subdir = "Frontend"        # boot Claude in this subdir (e.g. its own CLAUDE.md lives here)
+
+[projects.skill]
+start = "frontend-start-ticket"   # the skill `s`/`t` invoke
+
+[projects.worktree]
+copy  = [".env", "Frontend/.env"] # gitignored files copied from your main checkout into the worktree
+setup = ["npm install"]           # commands run in the new session before Claude starts
+```
+
+- **`copy`** — paths relative to the repo root, copied from the checkout you launch from into
+  the new worktree at the same path. Missing sources are skipped. Files only (not directories) —
+  regenerate `node_modules`/build output via `setup` instead. Find candidates with
+  `git status --ignored`.
+- **`setup`** — shell commands (joined with `&&`) run in the worktree's session; Claude starts
+  afterwards whether or not they succeed, so its scrollback shows any failure.
+- **`claude_subdir`** — the wizard auto-detects this when a subdirectory has its own `CLAUDE.md`.
+
+Sub-tables (`[projects.worktree]`, `[projects.skill]`) must come after the project's plain keys
+and before any `[[projects.presets]]`.
+
 ## Releasing (maintainers)
 
 Releases are automated and versioned with **[Semantic Versioning](https://semver.org)**

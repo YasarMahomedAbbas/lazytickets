@@ -90,6 +90,40 @@ line, then best-effort auto-flips the card to *In progress*. The **busy-guard** 
 `@claude_busy` tmux option with a pane-ownership check (copied from `sesh-list-bells`) so we
 never `/clear` Claude mid-task.
 
+### Worktree-start flow (`t`) — parallel start-work
+
+`s` drives the *current* session's shared `claude` window (one ticket at a time, busy-guarded).
+`t` is the parallel variant: each ticket gets its **own git worktree + own detached tmux
+session**, so there's no busy-guard and you can fire the whole backlog off at once.
+
+`t` → `begin_worktree_start` (real issue, linked skill, inside a git repo) → `Modal::WorktreeConfirm`
+→ on `y`, `confirm_worktree_start`:
+1. `worktree::add` → `git worktree add ../worktrees/issue-<n> -b issue-<n>`, **off the current
+   HEAD** (the modal shows `Fork from: <branch>` so you can confirm you're on main; detached HEAD
+   is flagged).
+2. `worktree::seed_files` copies the configured `[projects.worktree].copy` paths from the **main
+   checkout** into the new worktree (gitignored files a fresh checkout lacks — `.env`, etc.).
+3. `tmux::start_work_session` → `tmux new-session -d -s issue-<n> -c <launch dir>`, then sends one
+   line: `( <setup joined by &&> ) ; claude "Use the <skill> skill for issue #<n>"`. Setup runs in
+   a subshell (a `cd` can't move where Claude launches) and Claude starts regardless of setup's
+   exit (`;` not `&&`) so a failed `npm install` shows in scrollback. The prompt is a **`claude`
+   argument**, not send-keys into a running TUI — the fresh shell is ready immediately, no startup
+   race, and a new session has nothing to `/clear`.
+4. Best-effort auto-flip → *In progress*. Session is detached, so lazytickets keeps focus.
+
+**`claude_subdir`** (per-project config): Claude boots in `<worktree>/<subdir>` instead of the
+root — for a `Frontend/` that has its own `CLAUDE.md`. Validated against the live repo at `t`-press
+(no orphan worktree on a typo). The wizard auto-detects it: it scans the repo root for immediate
+subdirs containing a `CLAUDE.md` — one → set silently, several (`Frontend/` + `Backend/`) → a
+picker, none → repo root. Only when binding the current repo (not the "Add a board…" flow).
+
+**`worktree.rs`** spawns `git` (like `config::resolver` — git isn't centralised the way `gh`/`tmux`
+are); its path derivation (`branch_for`, `worktree_path`) and `seed_files` are pure and unit-tested.
+
+**Not built yet:** worktree/session teardown (cleanup is manual — `git worktree remove` +
+`tmux kill-session`), and per-label subdir/skill routing (a backend-labelled ticket still uses the
+single `claude_subdir`).
+
 ### Create-ticket flow
 
 `c` opens a `Modal::Create` form (title + multi-line description, optional label

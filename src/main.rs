@@ -749,6 +749,31 @@ async fn begin_worktree_start(app: &mut App) {
         .await
         .unwrap_or_else(|| "⚠ detached HEAD".into());
 
+    // Claude boots in `<worktree>/<claude_subdir>` when set (e.g. a `Frontend/`
+    // with its own CLAUDE.md). Validate against the live repo now so a config typo
+    // is caught before we create an orphan worktree the session can't launch in.
+    let subdir = app.config.claude_subdir.clone();
+    if let Some(sd) = &subdir
+        && !root.join(sd).is_dir()
+    {
+        app.modal = Modal::Message(format!(
+            "Configured claude_subdir '{sd}' isn't a directory in this repo. Fix claude_subdir in config."
+        ));
+        return;
+    }
+
+    // A compact preview of the post-create bootstrap, so it's visible before you
+    // commit: how many files get seeded and what setup will run.
+    let wt = &app.config.worktree;
+    let mut boot = Vec::new();
+    if !wt.copy.is_empty() {
+        boot.push(format!("seed {} file(s)", wt.copy.len()));
+    }
+    if !wt.setup.is_empty() {
+        boot.push(wt.setup.join(" && "));
+    }
+    let bootstrap = (!boot.is_empty()).then(|| boot.join("  ·  "));
+
     app.modal = Modal::WorktreeConfirm {
         item_id,
         issue,
@@ -756,6 +781,8 @@ async fn begin_worktree_start(app: &mut App) {
         session: branch,
         path: path.display().to_string(),
         base,
+        subdir,
+        bootstrap,
     };
 }
 
@@ -768,17 +795,19 @@ async fn confirm_worktree_start(app: &mut App, write_tx: &mpsc::UnboundedSender<
         skill,
         session,
         path,
+        subdir,
         ..
     } = &app.modal
     else {
         return;
     };
-    let (item_id, issue, skill, session, path) = (
+    let (item_id, issue, skill, session, path, subdir) = (
         item_id.clone(),
         *issue,
         skill.clone(),
         session.clone(),
         std::path::PathBuf::from(path),
+        subdir.clone(),
     );
 
     // The repo root is re-derived here rather than threaded through the modal so
@@ -800,13 +829,54 @@ async fn confirm_worktree_start(app: &mut App, write_tx: &mpsc::UnboundedSender<
         return;
     }
 
-    app.modal = match tmux::start_work_session(&session, &path, &skill, issue).await {
+    // Seed gitignored files (env, etc.) the fresh checkout lacks, from the main
+    // repo. A copy failure is worth reporting but not worth aborting the start.
+    let seeded = match worktree::seed_files(&root, &path, &app.config.worktree.copy) {
+        Ok(files) => files.len(),
+        Err(e) => {
+            app.modal = Modal::Message(format!(
+                "Worktree created, but seeding files failed: {}",
+                one_line(&e)
+            ));
+            return;
+        }
+    };
+
+    // Boot Claude in the configured subdir of the fresh worktree (else its root).
+    let launch_dir = match &subdir {
+        Some(sd) => path.join(sd),
+        None => path.clone(),
+    };
+    if !launch_dir.is_dir() {
+        app.modal = Modal::Message(format!(
+            "Worktree created at {}, but its '{}' subdir is missing on this branch.",
+            path.display(),
+            subdir.unwrap_or_default()
+        ));
+        return;
+    }
+
+    let setup = app.config.worktree.setup.clone();
+    let has_setup = !setup.is_empty();
+    app.modal = match tmux::start_work_session(&session, &launch_dir, &setup, &skill, issue).await {
         Ok(()) => {
             let flipped = try_auto_flip(app, &item_id, write_tx).await;
-            let note = if flipped {
-                " · moved to In progress"
+            // Report what the session is doing: seeded files, and whether setup is
+            // running ahead of Claude (it runs async in the session).
+            let mut notes = Vec::new();
+            if seeded > 0 {
+                notes.push(format!("seeded {seeded} file(s)"));
+            }
+            if has_setup {
+                notes.push("running setup".into());
+            }
+            if flipped {
+                notes.push("moved to In progress".into());
+            }
+            let note = if notes.is_empty() {
+                String::new()
             } else {
-                ""
+                format!(" · {}", notes.join(" · "))
             };
             Modal::Message(format!(
                 "Started #{issue} with '{skill}' in worktree session '{session}'.{note}"

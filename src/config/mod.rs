@@ -61,7 +61,7 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use schema::{Board, Filter, Preset, Skill};
+    use schema::{Board, Filter, Preset, Skill, Worktree};
 
     #[test]
     fn config_round_trips_through_toml() {
@@ -78,6 +78,10 @@ mod tests {
                 skill: Skill {
                     start: Some("frontend-start-ticket".into()),
                     create: None,
+                },
+                worktree: Worktree {
+                    copy: vec![".env".into(), "Frontend/.env".into()],
+                    setup: vec!["npm install".into()],
                 },
                 status_order: vec!["Refine".into(), "Done".into()],
                 exclude_statuses: vec!["Done".into()],
@@ -107,6 +111,11 @@ mod tests {
         assert_eq!(p.board.number, 6);
         assert_eq!(p.repos, vec!["WhiteWolfStudio/travel-smart".to_string()]);
         assert_eq!(p.skill.start.as_deref(), Some("frontend-start-ticket"));
+        assert_eq!(
+            p.worktree.copy,
+            vec![".env".to_string(), "Frontend/.env".to_string()]
+        );
+        assert_eq!(p.worktree.setup, vec!["npm install".to_string()]);
         assert_eq!(
             p.presets[1].include.assignees,
             vec!["YasarMahomedAbbas".to_string()]

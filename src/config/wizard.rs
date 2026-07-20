@@ -144,6 +144,33 @@ pub async fn run(
         .map(|i| skills[i].clone()),
     };
 
+    // Screen 3 (only if a subdir has its own CLAUDE.md): where Claude boots for
+    // worktree-start (`t`). One candidate → adopt it silently; several (e.g. a
+    // `Frontend/` and `Backend/`) → let the user pick. None → the worktree root.
+    // Only when binding this repo — an "Add a board…" board may belong to another
+    // repo, so the current cwd's folders say nothing about where its Claude runs.
+    let claude_subdir = if bind_repo {
+        let root = crate::worktree::repo_root(cwd)
+            .await
+            .unwrap_or_else(|| cwd.to_path_buf());
+        match detect_claude_subdirs(&root).as_slice() {
+            [] => None,
+            [only] => Some(only.clone()),
+            many => pick(
+                terminal,
+                &mut input,
+                &format!("Setup: {repo}"),
+                "A CLAUDE.md lives in several folders — pick where Claude starts (s for repo root):",
+                many,
+                true,
+            )
+            .await?
+            .map(|i| many[i].clone()),
+        }
+    } else {
+        None
+    };
+
     // Presets: `all`, plus `mine` bound to the resolved viewer login so it filters
     // without special `@me` handling.
     let mut presets = vec![Preset {
@@ -187,11 +214,12 @@ pub async fn run(
             number: board.number,
         },
         target_session: None,
-        claude_subdir: None,
+        claude_subdir,
         skill: Skill {
             start,
             create: None,
         },
+        worktree: Default::default(),
         status_order,
         exclude_statuses,
         presets,
@@ -227,6 +255,40 @@ fn detect_skills(cwd: &Path) -> Vec<String> {
     }
 
     names
+}
+
+/// Immediate subdirectories of `root` that carry their own `CLAUDE.md` —
+/// candidates for `claude_subdir` (where Claude boots for worktree-start). Sorted,
+/// real directory casing preserved (the path segment is case-sensitive). A repo
+/// with only a root-level CLAUDE.md yields none — booting at the root already
+/// finds it.
+fn detect_claude_subdirs(root: &Path) -> Vec<String> {
+    let mut names = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(root) {
+        for e in entries.flatten() {
+            if e.path().is_dir()
+                && has_claude_md(&e.path())
+                && let Some(name) = e.file_name().to_str()
+            {
+                names.push(name.to_string());
+            }
+        }
+    }
+    names.sort();
+    names
+}
+
+/// Whether `dir` directly contains a `CLAUDE.md` (any case).
+fn has_claude_md(dir: &Path) -> bool {
+    std::fs::read_dir(dir).is_ok_and(|mut es| {
+        es.any(|e| {
+            e.is_ok_and(|e| {
+                e.file_name()
+                    .to_str()
+                    .is_some_and(|n| n.eq_ignore_ascii_case("CLAUDE.md"))
+            })
+        })
+    })
 }
 
 /// Immediate subdirectory names of `dir` (each is a skill), sorted.

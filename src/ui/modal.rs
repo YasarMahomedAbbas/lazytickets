@@ -53,14 +53,28 @@ pub fn render(frame: &mut Frame, modal: &Modal) {
             session,
             path,
             base,
+            subdir,
+            bootstrap,
             ..
-        } => (
-            " Start in worktree ",
-            format!(
-                "Fork from:  {base}\n\nCreate worktree {path}\nand start #{issue} with '{skill}'\nin a new session '{session}'?\n\n[y] start    [n] cancel"
-            ),
-            NORD_GREEN,
-        ),
+        } => {
+            // Only mention the subdir when one is configured; the common single-root
+            // repo shouldn't carry an empty "start in" line.
+            let start_in = match subdir {
+                Some(sd) => format!("\nStart in:   {sd}/"),
+                None => String::new(),
+            };
+            let boot = match bootstrap {
+                Some(b) => format!("\nBootstrap:  {b}"),
+                None => String::new(),
+            };
+            (
+                " Start in worktree ",
+                format!(
+                    "Fork from:  {base}{start_in}{boot}\n\nCreate worktree {path}\nand start #{issue} with '{skill}'\nin a new session '{session}'?\n\n[y] start    [n] cancel"
+                ),
+                NORD_GREEN,
+            )
+        }
         Modal::ConfirmDelete { name, .. } => (
             " Delete filter ",
             format!(
@@ -84,7 +98,7 @@ pub fn render(frame: &mut Frame, modal: &Modal) {
     // The worktree confirm carries more text than the default 11-row box; give it
     // room so nothing clips.
     let height = if matches!(modal, Modal::WorktreeConfirm { .. }) {
-        13
+        16
     } else {
         11
     };

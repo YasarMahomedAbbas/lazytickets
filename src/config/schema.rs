@@ -15,12 +15,16 @@ pub struct ProjectConfig {
     /// tmux session for start-work (M5). Optional until then.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_session: Option<String>,
-    /// Subdir the claude pane runs in (M5). Optional until then.
+    /// Subdir Claude boots inside for worktree-start (`t`), e.g. `Frontend` when
+    /// that folder has its own CLAUDE.md. Unset → the worktree root.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claude_subdir: Option<String>,
     /// Skill names invoked by start-work / create (M5).
     #[serde(default, skip_serializing_if = "Skill::is_empty")]
     pub skill: Skill,
+    /// Files + setup commands that make a fresh worktree runnable (worktree-start).
+    #[serde(default, skip_serializing_if = "Worktree::is_empty")]
+    pub worktree: Worktree,
     /// Canonical column order, used to sort the list.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub status_order: Vec<String>,
@@ -52,6 +56,29 @@ pub struct Skill {
 impl Skill {
     fn is_empty(&self) -> bool {
         self.start.is_none() && self.create.is_none()
+    }
+}
+
+/// Post-create bootstrap for worktree-start (`t`). A fresh worktree only has
+/// *tracked* files, so gitignored env files are missing and dependencies aren't
+/// installed — these make it actually runnable.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Worktree {
+    /// Paths (relative to the repo root) copied from the main checkout into the
+    /// new worktree at the same relative path — for gitignored files like `.env`
+    /// that a fresh checkout lacks. A missing source is skipped, not an error.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub copy: Vec<String>,
+    /// Shell commands run in the new session (in the launch dir) before Claude
+    /// starts, e.g. `npm install`. Joined with `&&`; Claude launches regardless of
+    /// their exit status, so its scrollback shows any failure.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub setup: Vec<String>,
+}
+
+impl Worktree {
+    fn is_empty(&self) -> bool {
+        self.copy.is_empty() && self.setup.is_empty()
     }
 }
 
@@ -162,6 +189,7 @@ impl ProjectConfig {
             target_session: None,
             claude_subdir: None,
             skill: Skill::default(),
+            worktree: Worktree::default(),
             status_order: [
                 "Refine",
                 "Create Contract",

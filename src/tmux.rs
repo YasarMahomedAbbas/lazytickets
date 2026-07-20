@@ -68,20 +68,36 @@ pub async fn start_work(session: &str, skill: &str, issue: u64) -> Result<()> {
     Ok(())
 }
 
-/// Create a detached session named `session` rooted at `dir`, then launch Claude
-/// in its shell, seeded with the skill instruction for `issue`.
+/// Create a detached session named `session` rooted at `dir`, run any `setup`
+/// commands, then launch Claude in its shell, seeded with the skill instruction
+/// for `issue`.
 ///
 /// The prompt is passed as an argument to `claude` rather than typed in with
 /// send-keys after startup: the fresh shell is ready to accept the command
 /// immediately, so we never race Claude's TUI initialisation, and a brand-new
 /// session has nothing to `/clear`. Detached (`-d`) so lazytickets keeps focus —
 /// you stay put and fire off the next ticket.
-pub async fn start_work_session(session: &str, dir: &Path, skill: &str, issue: u64) -> Result<()> {
+///
+/// `setup` runs first in a subshell (`( … ) ;`) so any `cd` inside it can't move
+/// where Claude launches, and Claude starts regardless of setup's exit status —
+/// its scrollback shows a failed `npm install` rather than hiding it.
+pub async fn start_work_session(
+    session: &str,
+    dir: &Path,
+    setup: &[String],
+    skill: &str,
+    issue: u64,
+) -> Result<()> {
     let dir = dir.to_str().context("worktree path is not valid UTF-8")?;
     run_ok(&["new-session", "-d", "-s", session, "-c", dir]).await?;
-    // The whole `claude "…"` invocation is one literal line for the shell to
-    // parse; the quotes keep the `#<n>` from being read as a shell comment.
-    let launch = format!("claude \"Use the {skill} skill for issue #{issue}\"");
+    // The whole line is parsed by the shell; the quotes keep the `#<n>` from being
+    // read as a comment.
+    let claude = format!("claude \"Use the {skill} skill for issue #{issue}\"");
+    let launch = if setup.is_empty() {
+        claude
+    } else {
+        format!("( {} ) ; {claude}", setup.join(" && "))
+    };
     send_line(session, &launch).await?;
     Ok(())
 }
