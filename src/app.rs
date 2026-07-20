@@ -37,6 +37,17 @@ pub enum Modal {
         skill: String,
         session: String,
     },
+    /// Awaiting y/n before creating a worktree and starting the ticket in its own
+    /// detached tmux session (`t`). `path` is the display path of the worktree;
+    /// `base` is the branch it will fork from (so you can confirm you're on main).
+    WorktreeConfirm {
+        item_id: String,
+        issue: u64,
+        skill: String,
+        session: String,
+        path: String,
+        base: String,
+    },
     /// Status column picker (M6). `selected` indexes `options`.
     StatusMove {
         item_id: String,

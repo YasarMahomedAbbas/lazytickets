@@ -8,6 +8,7 @@ mod model;
 mod poll;
 mod tmux;
 mod ui;
+mod worktree;
 
 use app::{App, DetailState, InputMode, Modal};
 use config::Config;
@@ -368,6 +369,8 @@ async fn run(terminal: &mut DefaultTerminal, app: &mut App) -> anyhow::Result<()
                                         begin_status_move(app, id, status, &write_tx).await;
                                     } else if matches!(app.modal, Modal::Confirm { .. }) {
                                         confirm_start_work(app, &write_tx).await;
+                                    } else if matches!(app.modal, Modal::WorktreeConfirm { .. }) {
+                                        confirm_worktree_start(app, &write_tx).await;
                                     } else if matches!(app.modal, Modal::ConfirmDelete { .. }) {
                                         reschedule = confirm_delete_preset(app);
                                     } else if let Modal::ProjectPick { names, selected } = &app.modal {
@@ -384,6 +387,9 @@ async fn run(terminal: &mut DefaultTerminal, app: &mut App) -> anyhow::Result<()
                                 }
                                 KeyCode::Char('y') if matches!(app.modal, Modal::Confirm { .. }) => {
                                     confirm_start_work(app, &write_tx).await;
+                                }
+                                KeyCode::Char('y') if matches!(app.modal, Modal::WorktreeConfirm { .. }) => {
+                                    confirm_worktree_start(app, &write_tx).await;
                                 }
                                 KeyCode::Char('y') if matches!(app.modal, Modal::ConfirmDelete { .. }) => {
                                     reschedule = confirm_delete_preset(app);
@@ -424,6 +430,7 @@ async fn run(terminal: &mut DefaultTerminal, app: &mut App) -> anyhow::Result<()
                                 KeyCode::PageDown => app.scroll_detail(12),
                                 KeyCode::PageUp => app.scroll_detail(-12),
                                 KeyCode::Char('s') => begin_start_work(app).await,
+                                KeyCode::Char('t') => begin_worktree_start(app).await,
                                 KeyCode::Char('m') => open_status_mover(app).await,
                                 KeyCode::Char('p') => open_project_picker(app),
                                 KeyCode::Char('o') => open_in_browser(app).await,
@@ -697,6 +704,118 @@ async fn confirm_start_work(app: &mut App, write_tx: &mpsc::UnboundedSender<Writ
             ))
         }
         Err(e) => Modal::Message(format!("Start-work failed: {e}")),
+    };
+}
+
+/// Validate the worktree-start preconditions (real issue, linked skill, inside a
+/// git repo) and open the confirm modal. Unlike `s`, this needs no busy-guard or
+/// `claude` window: the ticket gets its own worktree and detached session, so any
+/// number can run in parallel.
+async fn begin_worktree_start(app: &mut App) {
+    let (item_id, number) = match app.selected() {
+        None => return,
+        Some(item) => (item.id.clone(), item.number),
+    };
+    let Some(issue) = number else {
+        app.modal = Modal::Message("Draft items have no issue number to start.".into());
+        return;
+    };
+    let Some(skill) = app.config.skill.start.clone() else {
+        app.modal = Modal::Message(
+            "No start-work skill linked for this project. Add a [projects.skill] start = \"…\" entry to config.".into(),
+        );
+        return;
+    };
+
+    let cwd = match std::env::current_dir() {
+        Ok(c) => c,
+        Err(e) => {
+            app.modal = Modal::Message(format!("Can't read the current directory: {e}"));
+            return;
+        }
+    };
+    let Some(root) = worktree::repo_root(&cwd).await else {
+        app.modal = Modal::Message(
+            "Not inside a git repository — worktree-start branches off the current repo.".into(),
+        );
+        return;
+    };
+    let branch = worktree::branch_for(issue);
+    let Some(path) = worktree::worktree_path(&root, &branch) else {
+        app.modal = Modal::Message("The repo has no parent directory to hold the worktree.".into());
+        return;
+    };
+    let base = worktree::current_branch(&root)
+        .await
+        .unwrap_or_else(|| "⚠ detached HEAD".into());
+
+    app.modal = Modal::WorktreeConfirm {
+        item_id,
+        issue,
+        skill,
+        session: branch,
+        path: path.display().to_string(),
+        base,
+    };
+}
+
+/// Create the worktree, launch Claude in its own detached session, then
+/// best-effort flip the card to In progress.
+async fn confirm_worktree_start(app: &mut App, write_tx: &mpsc::UnboundedSender<WriteMsg>) {
+    let Modal::WorktreeConfirm {
+        item_id,
+        issue,
+        skill,
+        session,
+        path,
+        ..
+    } = &app.modal
+    else {
+        return;
+    };
+    let (item_id, issue, skill, session, path) = (
+        item_id.clone(),
+        *issue,
+        skill.clone(),
+        session.clone(),
+        std::path::PathBuf::from(path),
+    );
+
+    // The repo root is re-derived here rather than threaded through the modal so
+    // the git call and the confirm can't disagree about where we are.
+    let cwd = match std::env::current_dir() {
+        Ok(c) => c,
+        Err(e) => {
+            app.modal = Modal::Message(format!("Can't read the current directory: {e}"));
+            return;
+        }
+    };
+    let Some(root) = worktree::repo_root(&cwd).await else {
+        app.modal = Modal::Message("Not inside a git repository.".into());
+        return;
+    };
+
+    if let Err(e) = worktree::add(&root, &path, &session).await {
+        app.modal = Modal::Message(format!("Couldn't create the worktree: {}", one_line(&e)));
+        return;
+    }
+
+    app.modal = match tmux::start_work_session(&session, &path, &skill, issue).await {
+        Ok(()) => {
+            let flipped = try_auto_flip(app, &item_id, write_tx).await;
+            let note = if flipped {
+                " · moved to In progress"
+            } else {
+                ""
+            };
+            Modal::Message(format!(
+                "Started #{issue} with '{skill}' in worktree session '{session}'.{note}"
+            ))
+        }
+        Err(e) => Modal::Message(format!(
+            "Worktree created, but starting the session failed: {}",
+            one_line(&e)
+        )),
     };
 }
 

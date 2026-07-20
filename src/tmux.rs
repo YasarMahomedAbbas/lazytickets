@@ -3,6 +3,7 @@
 //! drive the project's `claude` window with send-keys.
 
 use anyhow::{Context, Result};
+use std::path::Path;
 use std::process::Output;
 use tokio::process::Command;
 
@@ -64,6 +65,24 @@ pub async fn start_work(session: &str, skill: &str, issue: u64) -> Result<()> {
         &format!("Use the {skill} skill for issue #{issue}"),
     )
     .await?;
+    Ok(())
+}
+
+/// Create a detached session named `session` rooted at `dir`, then launch Claude
+/// in its shell, seeded with the skill instruction for `issue`.
+///
+/// The prompt is passed as an argument to `claude` rather than typed in with
+/// send-keys after startup: the fresh shell is ready to accept the command
+/// immediately, so we never race Claude's TUI initialisation, and a brand-new
+/// session has nothing to `/clear`. Detached (`-d`) so lazytickets keeps focus —
+/// you stay put and fire off the next ticket.
+pub async fn start_work_session(session: &str, dir: &Path, skill: &str, issue: u64) -> Result<()> {
+    let dir = dir.to_str().context("worktree path is not valid UTF-8")?;
+    run_ok(&["new-session", "-d", "-s", session, "-c", dir]).await?;
+    // The whole `claude "…"` invocation is one literal line for the shell to
+    // parse; the quotes keep the `#<n>` from being read as a shell comment.
+    let launch = format!("claude \"Use the {skill} skill for issue #{issue}\"");
+    send_line(session, &launch).await?;
     Ok(())
 }
 

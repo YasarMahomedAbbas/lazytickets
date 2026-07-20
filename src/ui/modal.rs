@@ -47,6 +47,20 @@ pub fn render(frame: &mut Frame, modal: &Modal) {
             ),
             NORD_CYAN,
         ),
+        Modal::WorktreeConfirm {
+            issue,
+            skill,
+            session,
+            path,
+            base,
+            ..
+        } => (
+            " Start in worktree ",
+            format!(
+                "Fork from:  {base}\n\nCreate worktree {path}\nand start #{issue} with '{skill}'\nin a new session '{session}'?\n\n[y] start    [n] cancel"
+            ),
+            NORD_GREEN,
+        ),
         Modal::ConfirmDelete { name, .. } => (
             " Delete filter ",
             format!(
@@ -67,7 +81,15 @@ pub fn render(frame: &mut Frame, modal: &Modal) {
         | Modal::None => return,
     };
 
-    let area = centered(60, 11, frame.area());
+    // The worktree confirm carries more text than the default 11-row box; give it
+    // room so nothing clips.
+    let height = if matches!(modal, Modal::WorktreeConfirm { .. }) {
+        13
+    } else {
+        11
+    };
+
+    let area = centered(60, height, frame.area());
     frame.render_widget(Clear, area);
     frame.render_widget(
         Paragraph::new(body).wrap(Wrap { trim: true }).block(
@@ -495,6 +517,7 @@ fn render_help(frame: &mut Frame) {
         ("e", "edit the active filter"),
         ("d", "delete the active filter"),
         ("s", "start work (drive claude pane)"),
+        ("t", "start work in a new worktree + session"),
         ("m", "move status column"),
         ("p", "switch project"),
         ("o", "open in browser"),

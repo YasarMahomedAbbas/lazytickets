@@ -202,6 +202,7 @@ _First usable as the real tmux tool at **M4** (unhardcodes the board); does the 
 | `e` | edit the active filter (re-seeds the builder, persists) |
 | `d` | delete the active filter (confirm, persists) |
 | `s` | start work (drive claude pane) |
+| `t` | start work in a new git worktree + detached tmux session (parallel) |
 | `m` | manual status mover |
 | `p` | switch project (or add a board) |
 | `o` | open in browser |
