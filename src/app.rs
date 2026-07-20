@@ -54,6 +54,9 @@ pub enum Modal {
     /// Interactive builder for a new saved preset (name + status/label/assignee
     /// toggles). Persists to `config.toml` on save.
     FilterBuild(FilterDraft),
+    /// New-ticket form: title + description, optional label + status. On submit
+    /// creates a GitHub issue, adds it to the board, and (optionally) sets status.
+    Create(CreateDraft),
     /// Awaiting y/n before deleting the preset at `index` (`name` for display).
     ConfirmDelete {
         index: usize,
@@ -152,6 +155,66 @@ impl FilterDraft {
                 assignees: picked(&self.assignees),
             },
         })
+    }
+}
+
+/// In-progress state for the create-ticket modal. `focus` walks a flat list of
+/// fields: `0` title, `1` description, `2` label, `3` status, `4` the Create
+/// button. `label_idx`/`status_idx` are 0 for "(none)", else 1-based into their
+/// option lists (so cycling wraps through none → each option → none).
+pub struct CreateDraft {
+    /// `owner/name` the issue is created in (first configured repo).
+    pub repo: String,
+    pub title: String,
+    pub body: String,
+    /// Selectable labels present on the board; empty is allowed.
+    pub labels: Vec<String>,
+    pub label_idx: usize,
+    /// Selectable statuses (config `status_order`, else board-distinct).
+    pub statuses: Vec<String>,
+    pub status_idx: usize,
+    pub focus: usize,
+}
+
+impl CreateDraft {
+    /// Highest focus index: title, description, label, status, then the button.
+    pub const FOCUS_MAX: usize = 4;
+
+    /// Move focus over `[title, body, label, status, create]`, clamped.
+    pub fn move_focus(&mut self, delta: isize) {
+        self.focus = (self.focus as isize + delta).clamp(0, Self::FOCUS_MAX as isize) as usize;
+    }
+
+    /// Cycle the label choice through `none → each label → none`.
+    pub fn cycle_label(&mut self, delta: isize) {
+        let n = self.labels.len() as isize;
+        self.label_idx = (self.label_idx as isize + delta).rem_euclid(n + 1) as usize;
+    }
+
+    /// Cycle the status choice through `none → each status → none`.
+    pub fn cycle_status(&mut self, delta: isize) {
+        let n = self.statuses.len() as isize;
+        self.status_idx = (self.status_idx as isize + delta).rem_euclid(n + 1) as usize;
+    }
+
+    /// The chosen label, or `None` for "(none)".
+    pub fn chosen_label(&self) -> Option<&str> {
+        (self.label_idx > 0).then(|| self.labels[self.label_idx - 1].as_str())
+    }
+
+    /// The chosen status, or `None` for "(none)".
+    pub fn chosen_status(&self) -> Option<&str> {
+        (self.status_idx > 0).then(|| self.statuses[self.status_idx - 1].as_str())
+    }
+
+    /// Display string for the label field.
+    pub fn label_display(&self) -> &str {
+        self.chosen_label().unwrap_or("(none)")
+    }
+
+    /// Display string for the status field.
+    pub fn status_display(&self) -> &str {
+        self.chosen_status().unwrap_or("(none)")
     }
 }
 
@@ -340,6 +403,41 @@ impl App {
         let n = self.config.presets.len() as isize;
         let next = (self.active_preset as isize + delta).rem_euclid(n) as usize;
         self.set_preset(next)
+    }
+
+    // --- create ticket ---
+
+    /// Open the create-ticket form, seeded with the board's labels and statuses.
+    /// The issue is created in the first configured repo (falling back to a repo
+    /// seen on the board). Returns false if no repo can be determined — the caller
+    /// shows a message instead.
+    pub fn open_create(&mut self) -> bool {
+        let repo = self
+            .config
+            .repos
+            .first()
+            .cloned()
+            .or_else(|| self.items.iter().find_map(|it| it.repository.clone()));
+        let Some(repo) = repo else {
+            return false;
+        };
+        let labels = self.distinct(|it| &it.labels);
+        let statuses = if self.config.status_order.is_empty() {
+            self.board_statuses()
+        } else {
+            self.config.status_order.clone()
+        };
+        self.modal = Modal::Create(CreateDraft {
+            repo,
+            title: String::new(),
+            body: String::new(),
+            labels,
+            label_idx: 0,
+            statuses,
+            status_idx: 0,
+            focus: 0,
+        });
+        true
     }
 
     // --- filter builder ---
@@ -593,6 +691,58 @@ mod tests {
 
         // Unknown ids are a no-op, not a panic.
         assert_eq!(app.set_item_status("missing", Some("x".into())), None);
+    }
+
+    #[test]
+    fn create_draft_cycles_optional_choices_and_clamps_focus() {
+        let mut d = CreateDraft {
+            repo: "o/r".into(),
+            title: String::new(),
+            body: String::new(),
+            labels: vec!["Frontend".into(), "Backend".into()],
+            label_idx: 0,
+            statuses: vec!["Refine".into()],
+            status_idx: 0,
+            focus: 0,
+        };
+        // Default is "(none)".
+        assert_eq!(d.chosen_label(), None);
+        assert_eq!(d.status_display(), "(none)");
+
+        // Forward cycles none → each option → none.
+        d.cycle_label(1);
+        assert_eq!(d.chosen_label(), Some("Frontend"));
+        d.cycle_label(1);
+        assert_eq!(d.chosen_label(), Some("Backend"));
+        d.cycle_label(1);
+        assert_eq!(d.chosen_label(), None, "wraps back to none");
+        // Backward wraps to the last option.
+        d.cycle_label(-1);
+        assert_eq!(d.chosen_label(), Some("Backend"));
+
+        // A single status option cycles none ↔ it.
+        d.cycle_status(1);
+        assert_eq!(d.chosen_status(), Some("Refine"));
+
+        // Focus clamps to [0, FOCUS_MAX].
+        d.move_focus(-1);
+        assert_eq!(d.focus, 0);
+        d.move_focus(99);
+        assert_eq!(d.focus, CreateDraft::FOCUS_MAX);
+    }
+
+    #[test]
+    fn open_create_seeds_repo_and_options() {
+        let mut app = App::new(vec![item("a", "Refine")], ProjectConfig::travel_smart());
+        assert!(app.open_create(), "a configured repo lets the form open");
+        match &app.modal {
+            Modal::Create(d) => {
+                assert_eq!(d.repo, "WhiteWolfStudio/travel-smart");
+                // Statuses come from config `status_order`.
+                assert_eq!(d.statuses.first().map(String::as_str), Some("Refine"));
+            }
+            _ => panic!("create modal should be open"),
+        }
     }
 
     #[test]

@@ -29,6 +29,10 @@ pub fn render(frame: &mut Frame, modal: &Modal) {
         render_builder(frame, draft);
         return;
     }
+    if let Modal::Create(draft) = modal {
+        render_create(frame, draft);
+        return;
+    }
 
     let (title, body, border) = match modal {
         Modal::Confirm {
@@ -59,6 +63,7 @@ pub fn render(frame: &mut Frame, modal: &Modal) {
         | Modal::ProjectPick { .. }
         | Modal::Help
         | Modal::FilterBuild(_)
+        | Modal::Create(_)
         | Modal::None => return,
     };
 
@@ -159,6 +164,9 @@ const G_STATUS: &str = "\u{f0db}"; // columns — Status group
 const G_TAG: &str = "\u{f02c}"; // tags — Labels group
 const G_USER: &str = "\u{f0c0}"; // users — Assignees group
 const G_CARET: &str = "\u{f0da}"; // focus pointer
+const G_REPO: &str = "\u{f1c0}"; // database/repo — create form target
+const G_DOC: &str = "\u{f036}"; // align-left — description field
+const G_PLUS: &str = "\u{f067}"; // plus — create button / modal title
 
 /// The filter builder: an editable name field over three glyph-labelled groups
 /// of checkboxes, with a live summary of the view it will produce. `focus == 0`
@@ -307,6 +315,158 @@ fn render_builder(frame: &mut Frame, draft: &FilterDraft) {
     );
 }
 
+/// The create-ticket form: an editable title + multi-line description over two
+/// cyclable optional fields (label, status), ending in a Create button. `focus`
+/// walks `[title, body, label, status, button]`; the focused field is marked by a
+/// caret and cyan text.
+fn render_create(frame: &mut Frame, draft: &crate::app::CreateDraft) {
+    use ratatui::text::Span;
+
+    let dim = Style::default().fg(NORD_DIM);
+    let amber = Style::default().fg(NORD_AMBER);
+    let green = Style::default().fg(NORD_GREEN);
+    let cyan = Style::default().fg(NORD_CYAN);
+    let cyan_bold = cyan.add_modifier(Modifier::BOLD);
+
+    let ptr = |focused: bool| {
+        if focused {
+            Span::styled(format!("{G_CARET} "), cyan)
+        } else {
+            Span::raw("  ")
+        }
+    };
+    // A labelled single-line text field with a block cursor when focused.
+    let text_row = |glyph: &str, label: &str, value: &str, focused: bool, empty_hint: &str| {
+        let value_span = if value.is_empty() && !focused {
+            Span::styled(empty_hint.to_string(), dim)
+        } else if focused {
+            Span::styled(format!("{value}▏"), cyan_bold)
+        } else {
+            Span::styled(value.to_string(), Style::default())
+        };
+        Line::from(vec![
+            ptr(focused),
+            Span::styled(
+                format!("{glyph}  {label:<12}"),
+                if focused { amber } else { dim },
+            ),
+            value_span,
+        ])
+    };
+
+    let mut lines: Vec<Line> = vec![Line::raw("")];
+
+    // Target repo (not editable) — makes the create destination unambiguous.
+    lines.push(Line::from(vec![
+        Span::raw("  "),
+        Span::styled(format!("{G_REPO}  {}", draft.repo), dim),
+    ]));
+    lines.push(Line::raw(""));
+
+    // Title (focus 0).
+    lines.push(text_row(
+        G_PENCIL,
+        "title",
+        &draft.title,
+        draft.focus == 0,
+        "required",
+    ));
+    lines.push(Line::raw(""));
+
+    // Description (focus 1) — multi-line, rendered under its label.
+    let body_focused = draft.focus == 1;
+    lines.push(Line::from(vec![
+        ptr(body_focused),
+        Span::styled(
+            format!("{G_DOC}  description"),
+            if body_focused { amber } else { dim },
+        ),
+    ]));
+    let body_lines: Vec<&str> = if draft.body.is_empty() {
+        vec![""]
+    } else {
+        draft.body.split('\n').collect()
+    };
+    let last = body_lines.len() - 1;
+    for (i, seg) in body_lines.iter().enumerate() {
+        let is_last = i == last;
+        let span = if draft.body.is_empty() && !body_focused {
+            Span::styled("optional", dim)
+        } else if body_focused && is_last {
+            Span::styled(format!("{seg}▏"), cyan_bold)
+        } else {
+            Span::styled((*seg).to_string(), Style::default())
+        };
+        lines.push(Line::from(vec![Span::raw("      "), span]));
+    }
+    lines.push(Line::raw(""));
+
+    // Label + status (focus 2, 3) — cyclable optional pickers.
+    let picker_row = |glyph: &str, label: &str, value: &str, focused: bool| {
+        let value_style = if focused {
+            cyan_bold
+        } else if value == "(none)" {
+            dim
+        } else {
+            green
+        };
+        Line::from(vec![
+            ptr(focused),
+            Span::styled(
+                format!("{glyph}  {label:<12}"),
+                if focused { amber } else { dim },
+            ),
+            Span::styled(format!("‹ {value} ›"), value_style),
+        ])
+    };
+    lines.push(picker_row(
+        G_TAG,
+        "label",
+        draft.label_display(),
+        draft.focus == 2,
+    ));
+    lines.push(picker_row(
+        G_STATUS,
+        "status",
+        draft.status_display(),
+        draft.focus == 3,
+    ));
+    lines.push(Line::raw(""));
+
+    // Create button (focus 4).
+    let btn_focused = draft.focus == 4;
+    let btn = if btn_focused {
+        Span::styled(
+            format!("  {G_PLUS}  Create ticket  "),
+            Style::default()
+                .fg(NORD_GREEN)
+                .add_modifier(Modifier::REVERSED | Modifier::BOLD),
+        )
+    } else {
+        Span::styled(format!("  {G_PLUS}  Create ticket  "), green)
+    };
+    lines.push(Line::from(vec![ptr(btn_focused), btn]));
+    lines.push(Line::raw(""));
+
+    lines.push(Line::styled(
+        "  tab/↑↓ move · ‹h/l›/space cycle · ↵ newline·create · esc cancel",
+        amber,
+    ));
+
+    let height = (lines.len() as u16 + 2).min(frame.area().height);
+    let area = centered(66, height, frame.area());
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .title(Line::from(format!(" {G_PLUS}  New ticket ")))
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(NORD_CYAN)),
+        ),
+        area,
+    );
+}
+
 /// A transient centered notice (e.g. "Loading…") drawn over the current frame
 /// while a blocking board fetch is in flight. No dismiss hint — it's not modal.
 pub fn render_notice(frame: &mut Frame, msg: &str) {
@@ -329,6 +489,7 @@ fn render_help(frame: &mut Frame) {
         ("J / K · C-d / C-u", "scroll detail (half-page)"),
         ("h / l · Tab · 1-9", "switch preset tab"),
         ("/", "live fuzzy filter (Esc clears)"),
+        ("c", "create a ticket"),
         ("L", "toggle inline labels"),
         ("f", "new saved filter (preset)"),
         ("e", "edit the active filter"),

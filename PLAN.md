@@ -197,6 +197,7 @@ _First usable as the real tmux tool at **M4** (unhardcodes the board); does the 
 | `j`/`k`, `↓`/`↑` | move selection |
 | `Tab`/`Shift-Tab`, `1..9` | switch preset tab |
 | `/` | live fuzzy filter (Esc to clear) |
+| `c` | create a ticket (title/description + optional label/status) |
 | `f` | new saved filter (build a preset, persists to config) |
 | `e` | edit the active filter (re-seeds the builder, persists) |
 | `d` | delete the active filter (confirm, persists) |

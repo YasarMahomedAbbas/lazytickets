@@ -149,6 +149,25 @@ pub async fn item_list(owner: &str, number: u32) -> Result<Vec<Item>> {
     parse(&bytes)
 }
 
+#[derive(Deserialize)]
+struct RawAddedItem {
+    id: String,
+}
+
+/// Add an existing issue (by its web `url`) to board `(owner, number)`, returning
+/// the new project item id (`PVTI_…`) — the handle a status write needs. Requires
+/// the `project` write scope.
+pub async fn add_item(owner: &str, number: u32, issue_url: &str) -> Result<String> {
+    let num = number.to_string();
+    let bytes = super::run(&[
+        "project", "item-add", &num, "--owner", owner, "--url", issue_url, "--format", "json",
+    ])
+    .await?;
+    let raw: RawAddedItem =
+        serde_json::from_slice(&bytes).context("parsing gh project item-add JSON")?;
+    Ok(raw.id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

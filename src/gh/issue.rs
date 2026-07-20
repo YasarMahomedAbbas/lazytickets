@@ -104,6 +104,52 @@ pub async fn open_web(repo: &str, number: u64) -> Result<()> {
     Ok(())
 }
 
+/// A freshly-created issue: enough to add it to a board and report it back.
+pub struct CreatedIssue {
+    pub url: String,
+    pub number: u64,
+}
+
+/// Create an issue in `repo` (`owner/name`) via `gh issue create`, optionally
+/// tagging it with `labels` (each must already exist in the repo, else `gh`
+/// refuses and nothing is created). `gh` prints the new issue's URL, from which
+/// we recover the number.
+pub async fn create(
+    repo: &str,
+    title: &str,
+    body: &str,
+    labels: &[String],
+) -> Result<CreatedIssue> {
+    let mut args: Vec<&str> = vec![
+        "issue", "create", "--repo", repo, "--title", title, "--body", body,
+    ];
+    for l in labels {
+        args.push("--label");
+        args.push(l.as_str());
+    }
+    let out = super::run(&args).await?;
+
+    let text = String::from_utf8_lossy(&out);
+    let url = text
+        .lines()
+        .rev()
+        .find(|l| l.contains("/issues/"))
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if url.is_empty() {
+        anyhow::bail!("gh issue create did not print an issue URL");
+    }
+    let number = issue_number_from_url(&url)
+        .context("could not parse the issue number from the created URL")?;
+    Ok(CreatedIssue { url, number })
+}
+
+/// The trailing number in an issue URL (`…/issues/365` → `365`).
+fn issue_number_from_url(url: &str) -> Option<u64> {
+    url.trim_end_matches('/').rsplit('/').next()?.parse().ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -116,5 +162,22 @@ mod tests {
         assert!(!d.state.is_empty());
         // Fixture #226 carries the "bug" label.
         assert!(d.labels.iter().any(|l| l == "bug"));
+    }
+
+    #[test]
+    fn parses_issue_number_from_created_url() {
+        assert_eq!(
+            issue_number_from_url("https://github.com/o/r/issues/365"),
+            Some(365)
+        );
+        assert_eq!(
+            issue_number_from_url("https://github.com/o/r/issues/12/"),
+            Some(12)
+        );
+        assert_eq!(
+            issue_number_from_url("https://github.com/o/r/pull/9"),
+            Some(9)
+        );
+        assert_eq!(issue_number_from_url("not-a-url"), None);
     }
 }

@@ -90,6 +90,16 @@ line, then best-effort auto-flips the card to *In progress*. The **busy-guard** 
 `@claude_busy` tmux option with a pane-ownership check (copied from `sesh-list-bells`) so we
 never `/clear` Claude mid-task.
 
+### Create-ticket flow
+
+`c` opens a `Modal::Create` form (title + multi-line description, optional label
+and status cycled from the board's values). On submit (`confirm_create` in
+`main.rs`): `gh issue::create` in the project's repo (first `repos` entry, else a
+repo seen on the board) → `gh project::add_item` onto the board → optional
+`write::set_status` → `poll::refresh_now` so the card appears. The `project`
+scope is checked **before** creating the issue, so a scope-less token never
+orphans an issue off the board.
+
 ## Conventions
 
 - `anyhow` in app code; `thiserror` reserved for typed errors in lower layers.

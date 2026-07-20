@@ -270,6 +270,95 @@ async fn run(terminal: &mut DefaultTerminal, app: &mut App) -> anyhow::Result<()
                                 }
                                 _ => {}
                             }
+                        } else if matches!(app.modal, Modal::Create(_)) {
+                            match key.code {
+                                KeyCode::Esc => app.modal = Modal::None,
+                                KeyCode::Tab | KeyCode::Down => {
+                                    if let Modal::Create(d) = &mut app.modal {
+                                        d.move_focus(1);
+                                    }
+                                }
+                                KeyCode::BackTab | KeyCode::Up => {
+                                    if let Modal::Create(d) = &mut app.modal {
+                                        d.move_focus(-1);
+                                    }
+                                }
+                                // Enter: newline in the description, submit on the
+                                // button, else advance to the next field.
+                                KeyCode::Enter => {
+                                    let focus = match &app.modal {
+                                        Modal::Create(d) => d.focus,
+                                        _ => 0,
+                                    };
+                                    match focus {
+                                        1 => {
+                                            if let Modal::Create(d) = &mut app.modal {
+                                                d.body.push('\n');
+                                            }
+                                        }
+                                        4 => confirm_create(app, &poll_tx).await,
+                                        _ => {
+                                            if let Modal::Create(d) = &mut app.modal {
+                                                d.move_focus(1);
+                                            }
+                                        }
+                                    }
+                                }
+                                KeyCode::Backspace => {
+                                    if let Modal::Create(d) = &mut app.modal {
+                                        match d.focus {
+                                            0 => {
+                                                d.title.pop();
+                                            }
+                                            1 => {
+                                                d.body.pop();
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                }
+                                // Arrows cycle the label/status pickers.
+                                KeyCode::Left => {
+                                    if let Modal::Create(d) = &mut app.modal {
+                                        match d.focus {
+                                            2 => d.cycle_label(-1),
+                                            3 => d.cycle_status(-1),
+                                            _ => {}
+                                        }
+                                    }
+                                }
+                                KeyCode::Right => {
+                                    if let Modal::Create(d) = &mut app.modal {
+                                        match d.focus {
+                                            2 => d.cycle_label(1),
+                                            3 => d.cycle_status(1),
+                                            _ => {}
+                                        }
+                                    }
+                                }
+                                // On text fields every printable key types; on the
+                                // pickers h/l/space cycle, other keys are inert.
+                                KeyCode::Char(c) => {
+                                    if let Modal::Create(d) = &mut app.modal {
+                                        match d.focus {
+                                            0 => d.title.push(c),
+                                            1 => d.body.push(c),
+                                            2 => match c {
+                                                ' ' | 'l' => d.cycle_label(1),
+                                                'h' => d.cycle_label(-1),
+                                                _ => {}
+                                            },
+                                            3 => match c {
+                                                ' ' | 'l' => d.cycle_status(1),
+                                                'h' => d.cycle_status(-1),
+                                                _ => {}
+                                            },
+                                            _ => {}
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
                         } else {
                             match key.code {
                                 KeyCode::Char('j') | KeyCode::Down => app.modal_move(1),
@@ -327,6 +416,7 @@ async fn run(terminal: &mut DefaultTerminal, app: &mut App) -> anyhow::Result<()
                                 KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                                     app.scroll_detail_half(-1);
                                 }
+                                KeyCode::Char('c') => begin_create(app),
                                 KeyCode::Char('d') => begin_delete_preset(app),
                                 KeyCode::Char('L') => app.toggle_labels(),
                                 KeyCode::Char('J') => app.scroll_detail(2),
@@ -608,6 +698,85 @@ async fn confirm_start_work(app: &mut App, write_tx: &mpsc::UnboundedSender<Writ
         }
         Err(e) => Modal::Message(format!("Start-work failed: {e}")),
     };
+}
+
+/// Open the create-ticket form, or explain why it can't open (no repo).
+fn begin_create(app: &mut App) {
+    if !app.open_create() {
+        app.modal = Modal::Message(
+            "No repository is configured for this board, so there's nowhere to create the issue.\nAdd a repo under this project in config.toml.".into(),
+        );
+    }
+}
+
+/// Shown when a ticket create is attempted without the `project` token scope —
+/// adding the new issue to the board is a project write.
+const CREATE_SCOPE_HINT: &str = "Creating a board ticket needs the 'project' scope. Quit and run:\n  gh auth refresh -s project\nthen relaunch.";
+
+/// Commit the create-ticket form: create the issue in its repo, add it to the
+/// board, optionally set its status, then refresh so the new card appears. Scope
+/// is checked *before* creating so we never leave an issue off the board.
+async fn confirm_create(app: &mut App, poll_tx: &mpsc::UnboundedSender<poll::Snapshot>) {
+    let (repo, title, body, label, status) = match &app.modal {
+        Modal::Create(d) => (
+            d.repo.clone(),
+            d.title.trim().to_string(),
+            d.body.clone(),
+            d.chosen_label().map(str::to_string),
+            d.chosen_status().map(str::to_string),
+        ),
+        _ => return,
+    };
+    if title.is_empty() {
+        return; // title is required — keep the form open
+    }
+    if !ensure_scope(app).await {
+        app.modal = Modal::Message(CREATE_SCOPE_HINT.into());
+        return;
+    }
+
+    let labels: Vec<String> = label.into_iter().collect();
+    let created = match gh::issue::create(&repo, &title, &body, &labels).await {
+        Ok(c) => c,
+        Err(e) => {
+            app.modal = Modal::Message(format!("Couldn't create the issue:\n{e}"));
+            return;
+        }
+    };
+
+    let (owner, number) = (app.config.board.owner.clone(), app.config.board.number);
+    let item_id = match gh::project::add_item(&owner, number, &created.url).await {
+        Ok(id) => id,
+        Err(e) => {
+            app.modal = Modal::Message(format!(
+                "Created issue #{} but couldn't add it to the board:\n{e}",
+                created.number
+            ));
+            return;
+        }
+    };
+
+    // Optional status — best-effort; the card exists on the board regardless.
+    let mut note = String::new();
+    if let Some(status) = status {
+        if ensure_status_field(app).await {
+            let field = app.status_field.clone().unwrap();
+            match field.option_id(&status) {
+                Some(opt) => {
+                    if let Err(e) = gh::write::set_status(&field, &item_id, opt).await {
+                        note = format!(" (status not set: {})", one_line(&e));
+                    }
+                }
+                None => note = format!(" (unknown status '{status}')"),
+            }
+        } else {
+            note = " (couldn't read the board's Status field)".into();
+        }
+    }
+
+    app.modal = Modal::Message(format!("Created #{} on {repo}.{note}", created.number));
+    // Pull the board now so the new card shows without waiting for the poll.
+    poll::refresh_now(owner, number, poll_tx.clone());
 }
 
 /// Open the selected ticket in the browser via `gh issue view --web`.
