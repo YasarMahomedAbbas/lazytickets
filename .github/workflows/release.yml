@@ -1,0 +1,62 @@
+name: release
+
+# Build brain: fires when a v* tag is pushed (by release-plz, or by hand).
+# Cross-compiles static musl binaries for x86_64 + aarch64 Linux, tars them with
+# sha256 sidecars, and attaches them plus the curl installer to the GitHub
+# Release for that tag. Asset names omit the version so
+# /releases/latest/download/ URLs stay stable across releases.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re)build assets for, e.g. v0.2.0"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  upload-binaries:
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-musl
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      # Cross-compiles (installs `cross` for musl targets automatically), builds
+      # the archive named `lazytickets-<target>.tar.gz`, writes a .sha256, and
+      # uploads both to the Release for this tag.
+      - uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          bin: lazytickets
+          target: ${{ matrix.target }}
+          archive: $bin-$target
+          checksum: sha256
+          tar: all
+          # On a tag push the action reads the tag from github.ref; for a manual
+          # workflow_dispatch we must point it at the chosen tag explicitly.
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', github.event.inputs.tag) || '' }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  upload-installer:
+    needs: upload-binaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - name: Attach installer script
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          cp contrib/install.sh lazytickets-installer.sh
+          gh release upload "$TAG" lazytickets-installer.sh --clobber

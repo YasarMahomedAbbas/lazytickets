@@ -1,0 +1,44 @@
+name: release-plz
+
+# Versioning brain: on every push to master, release-plz reads the Conventional
+# Commits since the last release and opens/updates a "Release PR" that bumps the
+# version in Cargo.toml and regenerates CHANGELOG.md (semver). Merging that PR
+# creates the git tag + GitHub Release, which triggers release.yml to build and
+# attach the prebuilt binaries.
+#
+# IMPORTANT: the tag must be created with a Personal Access Token (secret
+# RELEASE_PLZ_TOKEN), not the default GITHUB_TOKEN — tags pushed by the default
+# token do NOT trigger other workflows, so release.yml would never fire. See the
+# "Releasing" section of README.md.
+
+on:
+  push:
+    branches: [master]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: release-plz-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-plz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # Prefer the PAT so release-plz's tag can trigger release.yml; fall back
+          # to the built-in token when the secret isn't set yet (opens the Release
+          # PR fine — the tag just won't trigger the binary build until the PAT
+          # exists). See README "Releasing".
+          token: ${{ secrets.RELEASE_PLZ_TOKEN || github.token }}
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Run release-plz
+        uses: release-plz/action@v0.5
+        with:
+          command: release-plz
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN || github.token }}
