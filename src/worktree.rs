@@ -11,6 +11,16 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
+/// `git -C <repo_root> <args>`, the shared spawn for the read-only queries here.
+async fn git(repo_root: &Path, args: &[&str]) -> std::io::Result<std::process::Output> {
+    Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(args)
+        .output()
+        .await
+}
+
 /// Branch (and tmux session) name for an issue's worktree, e.g. `issue-123`.
 /// Stable, collision-free, and trivially mapped back to the ticket.
 pub fn branch_for(issue: u64) -> String {
@@ -61,17 +71,65 @@ pub async fn current_branch(repo_root: &Path) -> Option<String> {
     (!branch.is_empty()).then(|| branch.to_string())
 }
 
-/// `git -C <repo_root> worktree add <path> -b <branch>`, branching off the
-/// current HEAD. Errors (git refuses) if `branch` or `path` already exists —
-/// which the caller surfaces as "this ticket's already been started".
-pub async fn add(repo_root: &Path, path: &Path, branch: &str) -> Result<()> {
-    let out = Command::new("git")
-        .arg("-C")
+/// Split a configured base like `origin/develop` into `(remote, branch)` — the
+/// pair `git fetch` needs. `None` when the first segment isn't one of `remotes`
+/// (a plain local branch, `develop`, or one with slashes, `feat/foo`).
+pub fn split_remote<'a>(base: &'a str, remotes: &[String]) -> Option<(&'a str, &'a str)> {
+    let (remote, branch) = base.split_once('/')?;
+    (!branch.is_empty() && remotes.iter().any(|r| r == remote)).then_some((remote, branch))
+}
+
+/// The repo's configured remotes (`git remote`), empty on error.
+pub async fn remotes(repo_root: &Path) -> Vec<String> {
+    let Ok(out) = git(repo_root, &["remote"]).await else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect()
+}
+
+/// Whether `rev` resolves to a commit in this repo — so a mistyped configured
+/// base is caught before we create a worktree we'd have to tear down again.
+pub async fn has_rev(repo_root: &Path, rev: &str) -> bool {
+    let spec = format!("{rev}^{{commit}}");
+    git(repo_root, &["rev-parse", "--verify", "--quiet", &spec])
+        .await
+        .is_ok_and(|out| out.status.success())
+}
+
+/// Best-effort `git fetch <remote> <branch>` when `base` names a remote branch,
+/// so the fork point is the remote's real tip rather than a stale local ref.
+/// Offline (or a fetch that fails) is not a reason to refuse to start a ticket —
+/// the worktree is still created off whatever `base` resolves to locally.
+pub async fn fetch_base(repo_root: &Path, base: &str) -> bool {
+    let remotes = remotes(repo_root).await;
+    let Some((remote, branch)) = split_remote(base, &remotes) else {
+        return false;
+    };
+    git(repo_root, &["fetch", remote, branch])
+        .await
+        .is_ok_and(|out| out.status.success())
+}
+
+/// `git -C <repo_root> worktree add <path> -b <branch> [base]`, branching off
+/// `base` when given and the current HEAD otherwise. Errors (git refuses) if
+/// `branch` or `path` already exists — which the caller surfaces as "this
+/// ticket's already been started".
+pub async fn add(repo_root: &Path, path: &Path, branch: &str, base: Option<&str>) -> Result<()> {
+    let mut cmd = Command::new("git");
+    cmd.arg("-C")
         .arg(repo_root)
         .args(["worktree", "add"])
         .arg(path)
         .arg("-b")
-        .arg(branch)
+        .arg(branch);
+    if let Some(base) = base {
+        cmd.arg(base);
+    }
+    let out = cmd
         .output()
         .await
         .context("failed to spawn `git worktree add`")?;
@@ -127,6 +185,23 @@ mod tests {
     #[test]
     fn worktree_path_needs_a_parent() {
         assert_eq!(worktree_path(Path::new("/"), "issue-1"), None);
+    }
+
+    #[test]
+    fn remote_base_splits_only_for_known_remotes() {
+        let remotes = vec!["origin".to_string(), "upstream".to_string()];
+        assert_eq!(
+            split_remote("origin/develop", &remotes),
+            Some(("origin", "develop"))
+        );
+        assert_eq!(
+            split_remote("upstream/release/2.0", &remotes),
+            Some(("upstream", "release/2.0"))
+        );
+        // A local branch that merely contains a slash is not a remote ref.
+        assert_eq!(split_remote("feat/frontend/thing", &remotes), None);
+        assert_eq!(split_remote("develop", &remotes), None);
+        assert_eq!(split_remote("origin/", &remotes), None);
     }
 
     #[test]

@@ -98,9 +98,14 @@ session**, so there's no busy-guard and you can fire the whole backlog off at on
 
 `t` → `begin_worktree_start` (real issue, linked skill, inside a git repo) → `Modal::WorktreeConfirm`
 → on `y`, `confirm_worktree_start`:
-1. `worktree::add` → `git worktree add ../worktrees/issue-<n> -b issue-<n>`, **off the current
-   HEAD** (the modal shows `Fork from: <branch>` so you can confirm you're on main; detached HEAD
-   is flagged).
+1. `worktree::add` → `git worktree add ../worktrees/issue-<n> -b issue-<n> [base]`. The fork point
+   is the current HEAD unless `[projects.worktree].base` names one (e.g. `origin/develop`), in which
+   case that wins — so a ticket started while you sit on a feature branch still branches off the
+   trunk. A `<remote>/<branch>` base is `git fetch`ed first (best-effort; offline still starts the
+   ticket) so the fork point is the remote's real tip, not a stale local ref. The base is verified
+   with `rev-parse` at `t`-press, like `claude_subdir`, so a typo can't leave an orphan worktree.
+   The modal shows `Fork from: <base>` — the configured base, else the checked-out branch (detached
+   HEAD is flagged).
 2. `worktree::seed_files` copies the configured `[projects.worktree].copy` paths from the **main
    checkout** into the new worktree (gitignored files a fresh checkout lacks — `.env`, etc.).
 3. `tmux::start_work_session` → `tmux new-session -d -s issue-<n> -c <launch dir>`, then sends one

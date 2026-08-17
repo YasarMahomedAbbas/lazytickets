@@ -745,9 +745,24 @@ async fn begin_worktree_start(app: &mut App) {
         app.modal = Modal::Message("The repo has no parent directory to hold the worktree.".into());
         return;
     };
-    let base = worktree::current_branch(&root)
-        .await
-        .unwrap_or_else(|| "⚠ detached HEAD".into());
+    // A configured `worktree.base` (e.g. `origin/develop`) wins over whatever's
+    // checked out, so a ticket started from a feature branch still forks off the
+    // trunk. Verified here, like `claude_subdir`, so a typo can't leave an orphan.
+    let base_rev = app.config.worktree.base.clone();
+    if let Some(b) = &base_rev
+        && !worktree::has_rev(&root, b).await
+    {
+        app.modal = Modal::Message(format!(
+            "Configured worktree base '{b}' doesn't resolve to a commit in this repo. Fix base in config."
+        ));
+        return;
+    }
+    let base = match &base_rev {
+        Some(b) => format!("{b} (configured)"),
+        None => worktree::current_branch(&root)
+            .await
+            .unwrap_or_else(|| "⚠ detached HEAD".into()),
+    };
 
     // Claude boots in `<worktree>/<claude_subdir>` when set (e.g. a `Frontend/`
     // with its own CLAUDE.md). Validate against the live repo now so a config typo
@@ -781,6 +796,7 @@ async fn begin_worktree_start(app: &mut App) {
         session: branch,
         path: path.display().to_string(),
         base,
+        base_rev,
         subdir,
         bootstrap,
     };
@@ -795,18 +811,20 @@ async fn confirm_worktree_start(app: &mut App, write_tx: &mpsc::UnboundedSender<
         skill,
         session,
         path,
+        base_rev,
         subdir,
         ..
     } = &app.modal
     else {
         return;
     };
-    let (item_id, issue, skill, session, path, subdir) = (
+    let (item_id, issue, skill, session, path, base_rev, subdir) = (
         item_id.clone(),
         *issue,
         skill.clone(),
         session.clone(),
         std::path::PathBuf::from(path),
+        base_rev.clone(),
         subdir.clone(),
     );
 
@@ -824,7 +842,15 @@ async fn confirm_worktree_start(app: &mut App, write_tx: &mpsc::UnboundedSender<
         return;
     };
 
-    if let Err(e) = worktree::add(&root, &path, &session).await {
+    // Pull the remote branch behind a configured base before forking, so the
+    // worktree starts at its real tip and not a stale local ref. Best-effort:
+    // being offline shouldn't block starting a ticket.
+    let fetched = match &base_rev {
+        Some(b) => worktree::fetch_base(&root, b).await,
+        None => false,
+    };
+
+    if let Err(e) = worktree::add(&root, &path, &session, base_rev.as_deref()).await {
         app.modal = Modal::Message(format!("Couldn't create the worktree: {}", one_line(&e)));
         return;
     }
@@ -864,6 +890,9 @@ async fn confirm_worktree_start(app: &mut App, write_tx: &mpsc::UnboundedSender<
             // Report what the session is doing: seeded files, and whether setup is
             // running ahead of Claude (it runs async in the session).
             let mut notes = Vec::new();
+            if fetched {
+                notes.push("fetched base".into());
+            }
             if seeded > 0 {
                 notes.push(format!("seeded {seeded} file(s)"));
             }

@@ -64,6 +64,12 @@ impl Skill {
 /// installed — these make it actually runnable.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Worktree {
+    /// Branch a new worktree forks off, instead of whatever happens to be checked
+    /// out — e.g. `origin/develop`, so a ticket started while you sit on a feature
+    /// branch still branches off the trunk. A `<remote>/<branch>` value is fetched
+    /// first, so the fork point is the real tip and not a stale local ref.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
     /// Paths (relative to the repo root) copied from the main checkout into the
     /// new worktree at the same relative path — for gitignored files like `.env`
     /// that a fresh checkout lacks. A missing source is skipped, not an error.
@@ -78,7 +84,7 @@ pub struct Worktree {
 
 impl Worktree {
     fn is_empty(&self) -> bool {
-        self.copy.is_empty() && self.setup.is_empty()
+        self.base.is_none() && self.copy.is_empty() && self.setup.is_empty()
     }
 }
 

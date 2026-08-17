@@ -80,6 +80,7 @@ mod tests {
                     create: None,
                 },
                 worktree: Worktree {
+                    base: Some("origin/develop".into()),
                     copy: vec![".env".into(), "Frontend/.env".into()],
                     setup: vec!["npm install".into()],
                 },
