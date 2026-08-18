@@ -78,9 +78,13 @@ pub async fn start_work(session: &str, skill: &str, issue: u64) -> Result<()> {
 /// session has nothing to `/clear`. Detached (`-d`) so lazytickets keeps focus —
 /// you stay put and fire off the next ticket.
 ///
-/// `setup` runs first in a subshell (`( … ) ;`) so any `cd` inside it can't move
-/// where Claude launches, and Claude starts regardless of setup's exit status —
-/// its scrollback shows a failed `npm install` rather than hiding it.
+/// `setup` runs first under `sh -c` so any `cd` inside it can't move where
+/// Claude launches, and Claude starts regardless of setup's exit status (`;`
+/// not `&&`) — its scrollback shows a failed `npm install` rather than hiding
+/// it. `sh -c` rather than a `( … )` subshell because the session runs the
+/// user's login shell, which may be fish: fish parses `( … )` in command
+/// position as an error and leaves the whole line sitting unexecuted at the
+/// prompt.
 pub async fn start_work_session(
     session: &str,
     dir: &Path,
@@ -96,7 +100,14 @@ pub async fn start_work_session(
     let launch = if setup.is_empty() {
         claude
     } else {
-        format!("( {} ) ; {claude}", setup.join(" && "))
+        // Escape for a double-quoted string, which fish and POSIX shells parse
+        // the same way (`\\`, `\"`, `\$`); `$` still expands, just inside `sh`.
+        let script = setup
+            .join(" && ")
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('$', "\\$");
+        format!("sh -c \"{script}\" ; {claude}")
     };
     send_line(session, &launch).await?;
     Ok(())

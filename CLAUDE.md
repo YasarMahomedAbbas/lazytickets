@@ -109,8 +109,9 @@ session**, so there's no busy-guard and you can fire the whole backlog off at on
 2. `worktree::seed_files` copies the configured `[projects.worktree].copy` paths from the **main
    checkout** into the new worktree (gitignored files a fresh checkout lacks — `.env`, etc.).
 3. `tmux::start_work_session` → `tmux new-session -d -s issue-<n> -c <launch dir>`, then sends one
-   line: `( <setup joined by &&> ) ; claude "Use the <skill> skill for issue #<n>"`. Setup runs in
-   a subshell (a `cd` can't move where Claude launches) and Claude starts regardless of setup's
+   line: `sh -c "<setup joined by &&>" ; claude "Use the <skill> skill for issue #<n>"`. Setup runs
+   under `sh -c` (a `cd` can't move where Claude launches, and the syntax parses the same in fish —
+   a `( … )` subshell is a fish parse error that leaves the line unexecuted) and Claude starts regardless of setup's
    exit (`;` not `&&`) so a failed `npm install` shows in scrollback. The prompt is a **`claude`
    argument**, not send-keys into a running TUI — the fresh shell is ready immediately, no startup
    race, and a new session has nothing to `/clear`.
