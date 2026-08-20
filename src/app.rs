@@ -30,12 +30,14 @@ pub enum InputMode {
 /// input while open.
 pub enum Modal {
     None,
-    /// Awaiting y/n before driving the claude pane.
+    /// Awaiting Enter/Esc before driving the claude pane. `prompt` is the line
+    /// sent to Claude — prefilled from the skill + issue, editable in the modal.
     Confirm {
         item_id: String,
         issue: u64,
         skill: String,
         session: String,
+        prompt: String,
     },
     /// Awaiting y/n before creating a worktree and starting the ticket in its own
     /// detached tmux session (`t`). `path` is the display path of the worktree;
@@ -43,12 +45,14 @@ pub enum Modal {
     /// confirm you're on main); `base_rev` is the configured `worktree.base` when
     /// one is set, i.e. the explicit start point handed to `git worktree add`;
     /// `subdir` is the configured `claude_subdir` Claude boots inside, if any;
-    /// `bootstrap` is a one-line summary of the seed/setup steps, if configured.
+    /// `bootstrap` is a one-line summary of the seed/setup steps, if configured;
+    /// `prompt` is the editable line handed to `claude` in the new session.
     WorktreeConfirm {
         item_id: String,
         issue: u64,
         skill: String,
         session: String,
+        prompt: String,
         path: String,
         base: String,
         base_rev: Option<String>,
@@ -268,6 +272,21 @@ pub struct App {
     /// Height (rows) of the detail pane's inner content area, recorded each render.
     /// Drives the half-page Ctrl+D/Ctrl+U scroll; 0 until the first frame.
     pub detail_view_height: u16,
+}
+
+/// The default start-work prompt for a ticket: deterministic, no trigger-guessing.
+pub fn default_prompt(skill: &str, issue: u64) -> String {
+    format!("Use the {skill} skill for issue #{issue}")
+}
+
+impl Modal {
+    /// The editable start-work prompt, when this modal carries one.
+    pub fn prompt_mut(&mut self) -> Option<&mut String> {
+        match self {
+            Modal::Confirm { prompt, .. } | Modal::WorktreeConfirm { prompt, .. } => Some(prompt),
+            _ => None,
+        }
+    }
 }
 
 impl App {

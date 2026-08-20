@@ -34,47 +34,57 @@ pub fn render(frame: &mut Frame, modal: &Modal) {
         return;
     }
 
-    let (title, body, border) = match modal {
-        Modal::Confirm {
-            issue,
-            skill,
-            session,
-            ..
-        } => (
+    if let Modal::Confirm {
+        issue,
+        skill,
+        session,
+        prompt,
+        ..
+    } = modal
+    {
+        render_start(
+            frame,
             " Start work ",
-            format!(
-                "Start #{issue} with the '{skill}' skill\nin {session}:claude?\n\nThis clears the Claude pane first.\n\n[y] start    [n] cancel"
-            ),
             NORD_CYAN,
-        ),
-        Modal::WorktreeConfirm {
-            issue,
-            skill,
-            session,
-            path,
-            base,
-            subdir,
-            bootstrap,
-            ..
-        } => {
-            // Only mention the subdir when one is configured; the common single-root
-            // repo shouldn't carry an empty "start in" line.
-            let start_in = match subdir {
-                Some(sd) => format!("\nStart in:   {sd}/"),
-                None => String::new(),
-            };
-            let boot = match bootstrap {
-                Some(b) => format!("\nBootstrap:  {b}"),
-                None => String::new(),
-            };
-            (
-                " Start in worktree ",
-                format!(
-                    "Fork from:  {base}{start_in}{boot}\n\nCreate worktree {path}\nand start #{issue} with '{skill}'\nin a new session '{session}'?\n\n[y] start    [n] cancel"
-                ),
-                NORD_GREEN,
-            )
+            vec![
+                format!("Start #{issue} with the '{skill}' skill in {session}:claude."),
+                "This clears the Claude pane first.".into(),
+            ],
+            prompt,
+        );
+        return;
+    }
+    if let Modal::WorktreeConfirm {
+        issue,
+        skill,
+        session,
+        path,
+        base,
+        subdir,
+        bootstrap,
+        prompt,
+        ..
+    } = modal
+    {
+        let mut info = vec![format!("Fork from:  {base}")];
+        // Only mention the subdir when one is configured; the common single-root
+        // repo shouldn't carry an empty "start in" line.
+        if let Some(sd) = subdir {
+            info.push(format!("Start in:   {sd}/"));
         }
+        if let Some(b) = bootstrap {
+            info.push(format!("Bootstrap:  {b}"));
+        }
+        info.push(String::new());
+        info.push(format!("Create worktree {path}"));
+        info.push(format!(
+            "and start #{issue} with '{skill}' in a new session '{session}'."
+        ));
+        render_start(frame, " Start in worktree ", NORD_GREEN, info, prompt);
+        return;
+    }
+
+    let (title, body, border) = match modal {
         Modal::ConfirmDelete { name, .. } => (
             " Delete filter ",
             format!(
@@ -87,7 +97,9 @@ pub fn render(frame: &mut Frame, modal: &Modal) {
             format!("{msg}\n\n[any key] dismiss"),
             NORD_AMBER,
         ),
-        Modal::StatusMove { .. }
+        Modal::Confirm { .. }
+        | Modal::WorktreeConfirm { .. }
+        | Modal::StatusMove { .. }
         | Modal::ProjectPick { .. }
         | Modal::Help
         | Modal::FilterBuild(_)
@@ -95,18 +107,64 @@ pub fn render(frame: &mut Frame, modal: &Modal) {
         | Modal::None => return,
     };
 
-    // The worktree confirm carries more text than the default 11-row box; give it
-    // room so nothing clips.
-    let height = if matches!(modal, Modal::WorktreeConfirm { .. }) {
-        16
-    } else {
-        11
-    };
-
-    let area = centered(60, height, frame.area());
+    let area = centered(60, 11, frame.area());
     frame.render_widget(Clear, area);
     frame.render_widget(
         Paragraph::new(body).wrap(Wrap { trim: true }).block(
+            Block::default()
+                .title(title)
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(border)),
+        ),
+        area,
+    );
+}
+
+/// The start-work confirms: a few lines of context, then the prompt that will be
+/// sent to Claude as an editable field (prefilled; type to adjust, Ctrl+U to
+/// clear). Enter starts, Esc cancels.
+fn render_start(
+    frame: &mut Frame,
+    title: &str,
+    border: ratatui::style::Color,
+    info: Vec<String>,
+    prompt: &str,
+) {
+    use ratatui::text::Span;
+
+    let dim = Style::default().fg(NORD_DIM);
+    let amber = Style::default().fg(NORD_AMBER);
+    let cyan_bold = Style::default().fg(NORD_CYAN).add_modifier(Modifier::BOLD);
+
+    let mut lines: Vec<Line> = info.into_iter().map(Line::raw).collect();
+    lines.push(Line::raw(""));
+    lines.push(Line::styled("Prompt sent to Claude:", amber));
+    let shown = if prompt.is_empty() {
+        Span::styled("▏ (empty — type a prompt)", dim)
+    } else {
+        Span::styled(format!("{prompt}▏"), cyan_bold)
+    };
+    lines.push(Line::from(vec![Span::raw("  "), shown]));
+    lines.push(Line::raw(""));
+    lines.push(Line::styled(
+        "[Enter] start    [Esc] cancel    [Ctrl+U] clear prompt",
+        dim,
+    ));
+
+    // Long paths and prompts wrap inside the box; size it from the wrapped row
+    // count at the real width so nothing clips.
+    let width = centered(70, 1, frame.area()).width;
+    let inner = width.saturating_sub(2).max(1) as usize;
+    let rows: usize = lines
+        .iter()
+        .map(|l| (l.width().max(1)).div_ceil(inner))
+        .sum();
+    let height = (rows as u16 + 2).min(frame.area().height);
+
+    let area = centered(70, height, frame.area());
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Paragraph::new(lines).wrap(Wrap { trim: false }).block(
             Block::default()
                 .title(title)
                 .borders(Borders::ALL)

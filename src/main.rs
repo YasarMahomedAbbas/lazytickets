@@ -360,6 +360,37 @@ async fn run(terminal: &mut DefaultTerminal, app: &mut App) -> anyhow::Result<()
                                 }
                                 _ => {}
                             }
+                        } else if matches!(app.modal, Modal::Confirm { .. } | Modal::WorktreeConfirm { .. }) {
+                            // The start-work confirms carry an editable prompt, so
+                            // letters type into it: Enter starts, Esc cancels.
+                            match key.code {
+                                KeyCode::Esc => app.modal = Modal::None,
+                                KeyCode::Enter => {
+                                    if matches!(app.modal, Modal::Confirm { .. }) {
+                                        confirm_start_work(app, &write_tx).await;
+                                    } else {
+                                        confirm_worktree_start(app, &write_tx).await;
+                                    }
+                                }
+                                KeyCode::Backspace => {
+                                    if let Some(p) = app.modal.prompt_mut() {
+                                        p.pop();
+                                    }
+                                }
+                                // Ctrl+U wipes the line (readline-style) for a
+                                // from-scratch prompt.
+                                KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                    if let Some(p) = app.modal.prompt_mut() {
+                                        p.clear();
+                                    }
+                                }
+                                KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                    if let Some(p) = app.modal.prompt_mut() {
+                                        p.push(c);
+                                    }
+                                }
+                                _ => {}
+                            }
                         } else {
                             match key.code {
                                 KeyCode::Char('j') | KeyCode::Down => app.modal_move(1),
@@ -367,10 +398,6 @@ async fn run(terminal: &mut DefaultTerminal, app: &mut App) -> anyhow::Result<()
                                 KeyCode::Enter => {
                                     if let Some((id, status)) = app.modal_status_pick() {
                                         begin_status_move(app, id, status, &write_tx).await;
-                                    } else if matches!(app.modal, Modal::Confirm { .. }) {
-                                        confirm_start_work(app, &write_tx).await;
-                                    } else if matches!(app.modal, Modal::WorktreeConfirm { .. }) {
-                                        confirm_worktree_start(app, &write_tx).await;
                                     } else if matches!(app.modal, Modal::ConfirmDelete { .. }) {
                                         reschedule = confirm_delete_preset(app);
                                     } else if let Modal::ProjectPick { names, selected } = &app.modal {
@@ -384,12 +411,6 @@ async fn run(terminal: &mut DefaultTerminal, app: &mut App) -> anyhow::Result<()
                                     } else {
                                         app.modal = Modal::None;
                                     }
-                                }
-                                KeyCode::Char('y') if matches!(app.modal, Modal::Confirm { .. }) => {
-                                    confirm_start_work(app, &write_tx).await;
-                                }
-                                KeyCode::Char('y') if matches!(app.modal, Modal::WorktreeConfirm { .. }) => {
-                                    confirm_worktree_start(app, &write_tx).await;
                                 }
                                 KeyCode::Char('y') if matches!(app.modal, Modal::ConfirmDelete { .. }) => {
                                     reschedule = confirm_delete_preset(app);
@@ -672,6 +693,7 @@ async fn begin_start_work(app: &mut App) {
     app.modal = Modal::Confirm {
         item_id,
         issue,
+        prompt: app::default_prompt(&skill, issue),
         skill,
         session,
     };
@@ -685,13 +707,18 @@ async fn confirm_start_work(app: &mut App, write_tx: &mpsc::UnboundedSender<Writ
         issue,
         skill,
         session,
+        prompt,
     } = &app.modal
     else {
         return;
     };
+    let prompt = prompt.trim().to_string();
+    if prompt.is_empty() {
+        return; // nothing to send; keep editing
+    }
     let (item_id, issue, skill, session) =
         (item_id.clone(), *issue, skill.clone(), session.clone());
-    app.modal = match tmux::start_work(&session, &skill, issue).await {
+    app.modal = match tmux::start_work(&session, &prompt).await {
         Ok(()) => {
             let flipped = try_auto_flip(app, &item_id, write_tx).await;
             let note = if flipped {
@@ -792,6 +819,7 @@ async fn begin_worktree_start(app: &mut App) {
     app.modal = Modal::WorktreeConfirm {
         item_id,
         issue,
+        prompt: app::default_prompt(&skill, issue),
         skill,
         session: branch,
         path: path.display().to_string(),
@@ -810,6 +838,7 @@ async fn confirm_worktree_start(app: &mut App, write_tx: &mpsc::UnboundedSender<
         issue,
         skill,
         session,
+        prompt,
         path,
         base_rev,
         subdir,
@@ -818,6 +847,10 @@ async fn confirm_worktree_start(app: &mut App, write_tx: &mpsc::UnboundedSender<
     else {
         return;
     };
+    let prompt = prompt.trim().to_string();
+    if prompt.is_empty() {
+        return; // nothing to send; keep editing
+    }
     let (item_id, issue, skill, session, path, base_rev, subdir) = (
         item_id.clone(),
         *issue,
@@ -884,7 +917,7 @@ async fn confirm_worktree_start(app: &mut App, write_tx: &mpsc::UnboundedSender<
 
     let setup = app.config.worktree.setup.clone();
     let has_setup = !setup.is_empty();
-    app.modal = match tmux::start_work_session(&session, &launch_dir, &setup, &skill, issue).await {
+    app.modal = match tmux::start_work_session(&session, &launch_dir, &setup, &prompt).await {
         Ok(()) => {
             let flipped = try_auto_flip(app, &item_id, write_tx).await;
             // Report what the session is doing: seeded files, and whether setup is

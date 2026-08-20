@@ -55,22 +55,25 @@ pub async fn is_busy(session: &str) -> Result<bool> {
     Ok(String::from_utf8_lossy(&owner.stdout).trim() == session)
 }
 
-/// Clear the claude pane and invoke `skill` for `issue`. Two lines: `/clear`
-/// then an explicit skill instruction — deterministic, no trigger-guessing.
-pub async fn start_work(session: &str, skill: &str, issue: u64) -> Result<()> {
+/// Clear the claude pane and send `prompt`. Two lines: `/clear` then the
+/// (user-edited) start-work instruction.
+pub async fn start_work(session: &str, prompt: &str) -> Result<()> {
     let target = format!("{session}:claude");
     send_line(&target, "/clear").await?;
-    send_line(
-        &target,
-        &format!("Use the {skill} skill for issue #{issue}"),
-    )
-    .await?;
+    send_line(&target, prompt).await?;
     Ok(())
 }
 
+/// Escape `s` for a double-quoted shell string, which fish and POSIX shells
+/// parse the same way (`\\`, `\"`, `\$`); `$` still expands, just inside `sh`.
+fn shell_dq(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('$', "\\$")
+}
+
 /// Create a detached session named `session` rooted at `dir`, run any `setup`
-/// commands, then launch Claude in its shell, seeded with the skill instruction
-/// for `issue`.
+/// commands, then launch Claude in its shell, seeded with `prompt`.
 ///
 /// The prompt is passed as an argument to `claude` rather than typed in with
 /// send-keys after startup: the fresh shell is ready to accept the command
@@ -89,24 +92,17 @@ pub async fn start_work_session(
     session: &str,
     dir: &Path,
     setup: &[String],
-    skill: &str,
-    issue: u64,
+    prompt: &str,
 ) -> Result<()> {
     let dir = dir.to_str().context("worktree path is not valid UTF-8")?;
     run_ok(&["new-session", "-d", "-s", session, "-c", dir]).await?;
     // The whole line is parsed by the shell; the quotes keep the `#<n>` from being
-    // read as a comment.
-    let claude = format!("claude \"Use the {skill} skill for issue #{issue}\"");
+    // read as a comment, and the prompt is user-edited so it's escaped too.
+    let claude = format!("claude \"{}\"", shell_dq(prompt.trim()));
     let launch = if setup.is_empty() {
         claude
     } else {
-        // Escape for a double-quoted string, which fish and POSIX shells parse
-        // the same way (`\\`, `\"`, `\$`); `$` still expands, just inside `sh`.
-        let script = setup
-            .join(" && ")
-            .replace('\\', "\\\\")
-            .replace('"', "\\\"")
-            .replace('$', "\\$");
+        let script = shell_dq(&setup.join(" && "));
         format!("sh -c \"{script}\" ; {claude}")
     };
     send_line(session, &launch).await?;
@@ -130,4 +126,18 @@ async fn run_ok(args: &[&str]) -> Result<()> {
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::shell_dq;
+
+    #[test]
+    fn escapes_prompt_for_double_quotes() {
+        assert_eq!(
+            shell_dq(r#"say "hi" for $5 \ ok"#),
+            r#"say \"hi\" for \$5 \\ ok"#
+        );
+        assert_eq!(shell_dq("Use the start skill for issue #12"), "Use the start skill for issue #12");
+    }
 }

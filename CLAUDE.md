@@ -84,9 +84,10 @@ a project, trying in order: (1) path-keyed override, (2) git-remote `origin` nor
 ### Start-work flow (M5, the headline feature)
 
 `s` → `begin_start_work` validates preconditions (real issue not draft, a linked skill in
-config, inside tmux, session has a `claude` window, not busy) → Confirm modal → on `y`,
-`tmux::start_work` sends `/clear` then a literal `Use the <skill> skill for issue #<n>`
-line, then best-effort auto-flips the card to *In progress*. The **busy-guard** reads the
+config, inside tmux, session has a `claude` window, not busy) → Confirm modal, which shows an
+**editable prompt** prefilled with `Use the <skill> skill for issue #<n>` (`app::default_prompt`;
+type/Backspace to adjust, Ctrl+U clears, Enter starts, Esc cancels — no `y`/`n`, letters type) →
+`tmux::start_work` sends `/clear` then the prompt line, then best-effort auto-flips the card to *In progress*. The **busy-guard** reads the
 `@claude_busy` tmux option with a pane-ownership check (copied from `sesh-list-bells`) so we
 never `/clear` Claude mid-task.
 
@@ -97,7 +98,7 @@ never `/clear` Claude mid-task.
 session**, so there's no busy-guard and you can fire the whole backlog off at once.
 
 `t` → `begin_worktree_start` (real issue, linked skill, inside a git repo) → `Modal::WorktreeConfirm`
-→ on `y`, `confirm_worktree_start`:
+(same editable prompt as `s`) → on Enter, `confirm_worktree_start`:
 1. `worktree::add` → `git worktree add ../worktrees/issue-<n> -b issue-<n> [base]`. The fork point
    is the current HEAD unless `[projects.worktree].base` names one (e.g. `origin/develop`), in which
    case that wins — so a ticket started while you sit on a feature branch still branches off the
@@ -109,7 +110,7 @@ session**, so there's no busy-guard and you can fire the whole backlog off at on
 2. `worktree::seed_files` copies the configured `[projects.worktree].copy` paths from the **main
    checkout** into the new worktree (gitignored files a fresh checkout lacks — `.env`, etc.).
 3. `tmux::start_work_session` → `tmux new-session -d -s issue-<n> -c <launch dir>`, then sends one
-   line: `sh -c "<setup joined by &&>" ; claude "Use the <skill> skill for issue #<n>"`. Setup runs
+   line: `sh -c "<setup joined by &&>" ; claude "<prompt>"` (prompt escaped via `tmux::shell_dq`). Setup runs
    under `sh -c` (a `cd` can't move where Claude launches, and the syntax parses the same in fish —
    a `( … )` subshell is a fish parse error that leaves the line unexecuted) and Claude starts regardless of setup's
    exit (`;` not `&&`) so a failed `npm install` shows in scrollback. The prompt is a **`claude`
