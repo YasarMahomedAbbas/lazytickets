@@ -39,6 +39,7 @@ pub fn render(frame: &mut Frame, modal: &Modal) {
         skill,
         session,
         prompt,
+        editing,
         ..
     } = modal
     {
@@ -51,6 +52,7 @@ pub fn render(frame: &mut Frame, modal: &Modal) {
                 "This clears the Claude pane first.".into(),
             ],
             prompt,
+            *editing,
         );
         return;
     }
@@ -63,6 +65,7 @@ pub fn render(frame: &mut Frame, modal: &Modal) {
         subdir,
         bootstrap,
         prompt,
+        editing,
         ..
     } = modal
     {
@@ -80,7 +83,7 @@ pub fn render(frame: &mut Frame, modal: &Modal) {
         info.push(format!(
             "and start #{issue} with '{skill}' in a new session '{session}'."
         ));
-        render_start(frame, " Start in worktree ", NORD_GREEN, info, prompt);
+        render_start(frame, " Start in worktree ", NORD_GREEN, info, prompt, *editing);
         return;
     }
 
@@ -121,14 +124,15 @@ pub fn render(frame: &mut Frame, modal: &Modal) {
 }
 
 /// The start-work confirms: a few lines of context, then the prompt that will be
-/// sent to Claude as an editable field (prefilled; type to adjust, Ctrl+U to
-/// clear). Enter starts, Esc cancels.
+/// sent to Claude. Plain y/n by default; `e` turns the prompt into a text field
+/// (prefilled, so you add to it rather than retype) — Enter starts, Esc goes back.
 fn render_start(
     frame: &mut Frame,
     title: &str,
     border: ratatui::style::Color,
     info: Vec<String>,
     prompt: &str,
+    editing: bool,
 ) {
     use ratatui::text::Span;
 
@@ -139,15 +143,21 @@ fn render_start(
     let mut lines: Vec<Line> = info.into_iter().map(Line::raw).collect();
     lines.push(Line::raw(""));
     lines.push(Line::styled("Prompt sent to Claude:", amber));
-    let shown = if prompt.is_empty() {
-        Span::styled("▏ (empty — type a prompt)", dim)
-    } else {
+    let shown = if editing {
         Span::styled(format!("{prompt}▏"), cyan_bold)
+    } else if prompt.is_empty() {
+        Span::styled("(empty)", dim)
+    } else {
+        Span::raw(prompt.to_string())
     };
     lines.push(Line::from(vec![Span::raw("  "), shown]));
     lines.push(Line::raw(""));
     lines.push(Line::styled(
-        "[Enter] start    [Esc] cancel    [Ctrl+U] clear prompt",
+        if editing {
+            "[Enter] start    [Esc] done editing    [Ctrl+U] clear"
+        } else {
+            "[y] start    [e] edit prompt    [n] cancel"
+        },
         dim,
     ));
 

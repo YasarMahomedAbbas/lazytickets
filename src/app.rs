@@ -38,6 +38,8 @@ pub enum Modal {
         skill: String,
         session: String,
         prompt: String,
+        /// `e` toggles this: while true, keys type into `prompt`.
+        editing: bool,
     },
     /// Awaiting y/n before creating a worktree and starting the ticket in its own
     /// detached tmux session (`t`). `path` is the display path of the worktree;
@@ -53,6 +55,7 @@ pub enum Modal {
         skill: String,
         session: String,
         prompt: String,
+        editing: bool,
         path: String,
         base: String,
         base_rev: Option<String>,
@@ -285,6 +288,21 @@ impl Modal {
         match self {
             Modal::Confirm { prompt, .. } | Modal::WorktreeConfirm { prompt, .. } => Some(prompt),
             _ => None,
+        }
+    }
+
+    /// Whether a start-work confirm is currently in prompt-editing mode.
+    pub fn is_editing_prompt(&self) -> bool {
+        matches!(
+            self,
+            Modal::Confirm { editing: true, .. } | Modal::WorktreeConfirm { editing: true, .. }
+        )
+    }
+
+    /// Flip prompt-editing mode on a start-work confirm.
+    pub fn set_editing_prompt(&mut self, on: bool) {
+        if let Modal::Confirm { editing, .. } | Modal::WorktreeConfirm { editing, .. } = self {
+            *editing = on;
         }
     }
 }

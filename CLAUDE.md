@@ -84,10 +84,10 @@ a project, trying in order: (1) path-keyed override, (2) git-remote `origin` nor
 ### Start-work flow (M5, the headline feature)
 
 `s` → `begin_start_work` validates preconditions (real issue not draft, a linked skill in
-config, inside tmux, session has a `claude` window, not busy) → Confirm modal, which shows an
-**editable prompt** prefilled with `Use the <skill> skill for issue #<n>` (`app::default_prompt`;
-type/Backspace to adjust, Ctrl+U clears, Enter starts, Esc cancels — no `y`/`n`, letters type) →
-`tmux::start_work` sends `/clear` then the prompt line, then best-effort auto-flips the card to *In progress*. The **busy-guard** reads the
+config, inside tmux, session has a `claude` window, not busy) → Confirm modal showing the prompt
+`Use the <skill> skill for issue #<n>` (`app::default_prompt`). `y`/Enter starts, `n`/Esc cancels,
+**`e` edits the prompt in place** (prefilled so you append to it; Enter starts, Esc leaves edit
+mode keeping the edits, Ctrl+U clears) → `tmux::start_work` sends `/clear` then the prompt line, then best-effort auto-flips the card to *In progress*. The **busy-guard** reads the
 `@claude_busy` tmux option with a pane-ownership check (copied from `sesh-list-bells`) so we
 never `/clear` Claude mid-task.
 
@@ -98,7 +98,7 @@ never `/clear` Claude mid-task.
 session**, so there's no busy-guard and you can fire the whole backlog off at once.
 
 `t` → `begin_worktree_start` (real issue, linked skill, inside a git repo) → `Modal::WorktreeConfirm`
-(same editable prompt as `s`) → on Enter, `confirm_worktree_start`:
+(same y / e-to-edit / n prompt as `s`) → on `y`, `confirm_worktree_start`:
 1. `worktree::add` → `git worktree add ../worktrees/issue-<n> -b issue-<n> [base]`. The fork point
    is the current HEAD unless `[projects.worktree].base` names one (e.g. `origin/develop`), in which
    case that wins — so a ticket started while you sit on a feature branch still branches off the

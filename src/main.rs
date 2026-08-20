@@ -361,30 +361,34 @@ async fn run(terminal: &mut DefaultTerminal, app: &mut App) -> anyhow::Result<()
                                 _ => {}
                             }
                         } else if matches!(app.modal, Modal::Confirm { .. } | Modal::WorktreeConfirm { .. }) {
-                            // The start-work confirms carry an editable prompt, so
-                            // letters type into it: Enter starts, Esc cancels.
+                            // Start-work confirms: y/n by default, `e` drops into
+                            // editing the prefilled prompt (Enter starts, Esc
+                            // returns to the confirm without discarding edits).
+                            let editing = app.modal.is_editing_prompt();
                             match key.code {
-                                KeyCode::Esc => app.modal = Modal::None,
-                                KeyCode::Enter => {
+                                KeyCode::Enter | KeyCode::Char('y') if !editing || key.code == KeyCode::Enter => {
                                     if matches!(app.modal, Modal::Confirm { .. }) {
                                         confirm_start_work(app, &write_tx).await;
                                     } else {
                                         confirm_worktree_start(app, &write_tx).await;
                                     }
                                 }
-                                KeyCode::Backspace => {
+                                KeyCode::Esc if editing => app.modal.set_editing_prompt(false),
+                                KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('q') if !editing => {
+                                    app.modal = Modal::None;
+                                }
+                                KeyCode::Char('e') if !editing => app.modal.set_editing_prompt(true),
+                                KeyCode::Backspace if editing => {
                                     if let Some(p) = app.modal.prompt_mut() {
                                         p.pop();
                                     }
                                 }
-                                // Ctrl+U wipes the line (readline-style) for a
-                                // from-scratch prompt.
-                                KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                KeyCode::Char('u') if editing && key.modifiers.contains(KeyModifiers::CONTROL) => {
                                     if let Some(p) = app.modal.prompt_mut() {
                                         p.clear();
                                     }
                                 }
-                                KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                KeyCode::Char(c) if editing && !key.modifiers.contains(KeyModifiers::CONTROL) => {
                                     if let Some(p) = app.modal.prompt_mut() {
                                         p.push(c);
                                     }
@@ -694,6 +698,7 @@ async fn begin_start_work(app: &mut App) {
         item_id,
         issue,
         prompt: app::default_prompt(&skill, issue),
+        editing: false,
         skill,
         session,
     };
@@ -708,6 +713,7 @@ async fn confirm_start_work(app: &mut App, write_tx: &mpsc::UnboundedSender<Writ
         skill,
         session,
         prompt,
+        ..
     } = &app.modal
     else {
         return;
@@ -820,6 +826,7 @@ async fn begin_worktree_start(app: &mut App) {
         item_id,
         issue,
         prompt: app::default_prompt(&skill, issue),
+        editing: false,
         skill,
         session: branch,
         path: path.display().to_string(),
