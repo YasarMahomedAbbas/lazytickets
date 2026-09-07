@@ -83,7 +83,14 @@ pub fn render(frame: &mut Frame, modal: &Modal) {
         info.push(format!(
             "and start #{issue} with '{skill}' in a new session '{session}'."
         ));
-        render_start(frame, " Start in worktree ", NORD_GREEN, info, prompt, *editing);
+        render_start(
+            frame,
+            " Start in worktree ",
+            NORD_GREEN,
+            info,
+            prompt,
+            *editing,
+        );
         return;
     }
 

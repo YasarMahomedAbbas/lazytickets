@@ -27,9 +27,12 @@ const M_BLOCKED: &str = "\u{f057}"; // times-circle — blocked
 
 pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     // tabs (1) · list (rest) · footer (1): filter input while filtering, else hints.
-    let chunks =
-        Layout::vertical([Constraint::Length(1), Constraint::Min(1), Constraint::Length(1)])
-            .split(area);
+    let chunks = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(1),
+        Constraint::Length(1),
+    ])
+    .split(area);
 
     render_tabs(frame, chunks[0], app);
     render_list(frame, chunks[1], app);

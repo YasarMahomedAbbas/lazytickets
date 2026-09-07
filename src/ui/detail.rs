@@ -71,7 +71,11 @@ fn placeholder(frame: &mut Frame, area: Rect, msg: &str) {
 /// A single physical row of the flattened detail document.
 enum Row {
     Line(Line<'static>),
-    Image { url: String, rows: u16, state: ImgKind },
+    Image {
+        url: String,
+        rows: u16,
+        state: ImgKind,
+    },
 }
 
 enum ImgKind {
@@ -130,7 +134,11 @@ fn render_loaded(frame: &mut Frame, inner: Rect, app: &mut App) {
                 let rect = Rect::new(inner.x, screen_y, inner.width, 1);
                 frame.render_widget(Paragraph::new(line.clone()), rect);
             }
-            Row::Image { url, rows: irows, state } => {
+            Row::Image {
+                url,
+                rows: irows,
+                state,
+            } => {
                 // Draw only once the image's top edge is in view; the pane is at
                 // least as tall as any image (rows are capped to inner.height), so
                 // an image is fully visible somewhere in its scroll range and then
@@ -147,13 +155,23 @@ fn render_loaded(frame: &mut Frame, inner: Rect, app: &mut App) {
                         if let Some(proto) = images.protocol_for(url, inner.width, *irows) {
                             frame.render_widget(Image::new(proto).allow_clipping(true), rect);
                         } else {
-                            note(frame, rect, G_IMAGE, "image couldn't be displayed", NORD_MUTED);
+                            note(
+                                frame,
+                                rect,
+                                G_IMAGE,
+                                "image couldn't be displayed",
+                                NORD_MUTED,
+                            );
                         }
                     }
                     ImgKind::Loading => note(frame, rect, G_IMAGE, "loading image…", NORD_MUTED),
-                    ImgKind::Failed(e) => {
-                        note(frame, rect, "\u{f071}", &format!("image failed: {e}"), NORD_PURPLE)
-                    }
+                    ImgKind::Failed(e) => note(
+                        frame,
+                        rect,
+                        "\u{f071}",
+                        &format!("image failed: {e}"),
+                        NORD_PURPLE,
+                    ),
                 }
             }
         }
@@ -185,7 +203,11 @@ fn build_rows(
     let text = Style::default().fg(NORD_TEXT);
 
     // --- header ---
-    for l in wrap(&d.title, width, Style::default().fg(NORD_CYAN).add_modifier(Modifier::BOLD)) {
+    for l in wrap(
+        &d.title,
+        width,
+        Style::default().fg(NORD_CYAN).add_modifier(Modifier::BOLD),
+    ) {
         rows.push(Row::Line(l));
     }
     rows.push(Row::Line(state_line(d)));
@@ -208,7 +230,9 @@ fn build_rows(
             }
             ContentPart::Image(iref) => {
                 let (state, dims) = match images.cache.get(&iref.url) {
-                    Some(ImageEntry::Ready { img, .. }) => (ImgKind::Ready, (img.width(), img.height())),
+                    Some(ImageEntry::Ready { img, .. }) => {
+                        (ImgKind::Ready, (img.width(), img.height()))
+                    }
                     Some(ImageEntry::Failed(e)) => (ImgKind::Failed(e.clone()), (0, 0)),
                     _ => (
                         ImgKind::Loading,

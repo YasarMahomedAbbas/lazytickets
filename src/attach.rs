@@ -220,8 +220,7 @@ mod tests {
 
     #[test]
     fn handles_multiple_images_in_order() {
-        let body =
-            "<img src='https://a/1.png'>mid<img src='https://a/2.png'>![m](https://a/3.png)";
+        let body = "<img src='https://a/1.png'>mid<img src='https://a/2.png'>![m](https://a/3.png)";
         assert_eq!(
             image_urls(body),
             vec![

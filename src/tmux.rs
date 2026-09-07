@@ -138,6 +138,9 @@ mod tests {
             shell_dq(r#"say "hi" for $5 \ ok"#),
             r#"say \"hi\" for \$5 \\ ok"#
         );
-        assert_eq!(shell_dq("Use the start skill for issue #12"), "Use the start skill for issue #12");
+        assert_eq!(
+            shell_dq("Use the start skill for issue #12"),
+            "Use the start skill for issue #12"
+        );
     }
 }
