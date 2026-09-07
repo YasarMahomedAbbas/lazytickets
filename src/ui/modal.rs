@@ -278,6 +278,7 @@ const G_CARET: &str = "\u{f0da}"; // focus pointer
 const G_REPO: &str = "\u{f1c0}"; // database/repo — create form target
 const G_DOC: &str = "\u{f036}"; // align-left — description field
 const G_PLUS: &str = "\u{f067}"; // plus — create button / modal title
+const G_TREE: &str = "\u{f0e8}"; // sitemap — Grouping group
 
 /// The filter builder: an editable name field over three glyph-labelled groups
 /// of checkboxes, with a live summary of the view it will produce. `focus == 0`
@@ -327,6 +328,7 @@ fn render_builder(frame: &mut Frame, draft: &FilterDraft) {
         (G_STATUS, "Status", &draft.statuses),
         (G_TAG, "Labels", &draft.labels),
         (G_USER, "Assignees", &draft.assignees),
+        (G_TREE, "Grouping", &draft.grouping),
     ];
     let mut row = 1usize;
     for (glyph, title, items) in groups {
@@ -371,7 +373,9 @@ fn render_builder(frame: &mut Frame, draft: &FilterDraft) {
         lines.push(Line::raw(""));
     }
 
-    if draft.option_count() == 0 {
+    // The Grouping row always exists, so "nothing to filter on" asks about the
+    // three board-derived groups only.
+    if draft.statuses.is_empty() && draft.labels.is_empty() && draft.assignees.is_empty() {
         lines.push(Line::styled(
             "   nothing on this board to filter on yet",
             dim,
@@ -401,7 +405,11 @@ fn render_builder(frame: &mut Frame, draft: &FilterDraft) {
     } else {
         Span::styled(parts.join("    "), green)
     };
-    lines.push(Line::from(vec![Span::styled("  showing  ", dim), summary]));
+    let mut showing = vec![Span::styled("  showing  ", dim), summary];
+    if draft.grouping.iter().any(|(_, on)| *on) {
+        showing.push(Span::styled(format!("    {G_TREE} + parents"), amber));
+    }
+    lines.push(Line::from(showing));
     lines.push(Line::raw(""));
 
     // --- key hints ---

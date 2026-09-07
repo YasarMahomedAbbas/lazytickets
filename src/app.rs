@@ -4,11 +4,11 @@ use crate::attach::{self, ContentPart};
 use crate::config::schema::{Filter, Preset, ProjectConfig};
 use crate::gh::issue::IssueDetail;
 use crate::images::Images;
-use crate::model::Item;
+use crate::model::{Item, ParentRef};
 use fuzzy_matcher::FuzzyMatcher;
 use fuzzy_matcher::skim::SkimMatcherV2;
 use ratatui::widgets::ListState;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// State of the right-hand detail pane for the current selection.
 pub enum DetailState {
@@ -97,15 +97,22 @@ impl Modal {
     }
 }
 
-/// In-progress state for the filter builder modal. The three option groups are
+/// The single row of the builder's `Grouping` section, whose checkbox is the
+/// preset's `include_parents`.
+pub const GROUP_PARENTS_LABEL: &str = "show parent tasks of matching sub-issues";
+
+/// In-progress state for the filter builder modal. The three filter groups are
 /// seeded from the values actually present on the board; `focus` walks a flat
 /// list where `0` is the name field and `1..` are the option rows in order
-/// (statuses, then labels, then assignees).
+/// (statuses, then labels, then assignees, then grouping).
 pub struct FilterDraft {
     pub name: String,
     pub statuses: Vec<(String, bool)>,
     pub labels: Vec<(String, bool)>,
     pub assignees: Vec<(String, bool)>,
+    /// Always exactly one row (`GROUP_PARENTS_LABEL`), so it rides the same
+    /// focus/toggle machinery as the filter groups.
+    pub grouping: Vec<(String, bool)>,
     pub focus: usize,
     /// The name of the preset being edited, or `None` for a brand-new filter.
     /// On save, a rename (name changed from this) drops the old entry.
@@ -113,9 +120,24 @@ pub struct FilterDraft {
 }
 
 impl FilterDraft {
-    /// Total number of toggleable option rows across all three groups.
+    /// Every option group in focus order, for the walk/toggle/render machinery.
+    pub fn groups(&self) -> [&Vec<(String, bool)>; 4] {
+        [
+            &self.statuses,
+            &self.labels,
+            &self.assignees,
+            &self.grouping,
+        ]
+    }
+
+    /// Total number of toggleable option rows across all groups.
     pub fn option_count(&self) -> usize {
-        self.statuses.len() + self.labels.len() + self.assignees.len()
+        self.groups().iter().map(|g| g.len()).sum()
+    }
+
+    /// A one-row `Grouping` section, checked to match `on`.
+    pub fn grouping_row(on: bool) -> Vec<(String, bool)> {
+        vec![(GROUP_PARENTS_LABEL.to_string(), on)]
     }
 
     /// Move focus by `delta` over `[name, option_0, … option_n-1]`, clamped.
@@ -132,7 +154,7 @@ impl FilterDraft {
         // option row of each non-empty group.
         let mut starts = vec![0usize];
         let mut running = 1usize;
-        for group in [&self.statuses, &self.labels, &self.assignees] {
+        for group in self.groups() {
             if !group.is_empty() {
                 starts.push(running);
             }
@@ -149,7 +171,12 @@ impl FilterDraft {
             return;
         }
         let mut i = self.focus - 1;
-        for group in [&mut self.statuses, &mut self.labels, &mut self.assignees] {
+        for group in [
+            &mut self.statuses,
+            &mut self.labels,
+            &mut self.assignees,
+            &mut self.grouping,
+        ] {
             if i < group.len() {
                 group[i].1 = !group[i].1;
                 return;
@@ -179,6 +206,7 @@ impl FilterDraft {
                 statuses: picked(&self.statuses),
                 assignees: picked(&self.assignees),
             },
+            include_parents: self.grouping.first().is_some_and(|(_, on)| *on),
         })
     }
 }
@@ -253,6 +281,9 @@ pub struct App {
     /// Indices into `items`, after preset + exclude + fuzzy filtering, sorted by
     /// status order. This is what the list renders and selection indexes into.
     pub visible: Vec<usize>,
+    /// Subset of `visible` rendered one level in, under the parent card directly
+    /// above it. Only ever populated for an `include_parents` preset.
+    pub nested: HashSet<usize>,
     pub list_state: ListState,
     pub detail: DetailState,
     pub detail_cache: HashMap<String, IssueDetail>,
@@ -307,6 +338,77 @@ impl Modal {
     }
 }
 
+/// Roll a preset's matches up under their parent card, for an `include_parents`
+/// preset.
+///
+/// A parent is listed whenever one of its sub-issues matched — even though the
+/// parent itself doesn't (a `documentation` parent of a `Frontend` sub-issue is
+/// the whole reason this exists) — with its matching children directly beneath
+/// it. Top-level rows keep the usual status-order sort, and so do the children
+/// within each group.
+///
+/// The list nests exactly **one** level: a card that hosts a group stays
+/// top-level even when it is itself a sub-issue. Parents that aren't on the
+/// board, and parents hidden by `exclude_statuses`, don't host a group — their
+/// children just stay top-level.
+fn group_by_parent(
+    items: &[Item],
+    config: &ProjectConfig,
+    preset: &Preset,
+    matched: &[usize],
+) -> (Vec<usize>, HashSet<usize>) {
+    // `(repo, number)` → index, so a sub-issue's `parent` resolves to a card.
+    let by_key: HashMap<ParentRef, usize> = items
+        .iter()
+        .enumerate()
+        .filter_map(|(i, it)| Some((it.key()?, i)))
+        .collect();
+
+    let parent_of: HashMap<usize, usize> = matched
+        .iter()
+        .filter_map(|&i| {
+            let p = *by_key.get(items[i].parent.as_ref()?)?;
+            (p != i && config.keeps_parent(preset, &items[p])).then_some((i, p))
+        })
+        .collect();
+    let hosts: HashSet<usize> = parent_of.values().copied().collect();
+    let matched_set: HashSet<usize> = matched.iter().copied().collect();
+
+    let mut tops: Vec<usize> = Vec::new();
+    let mut kids: HashMap<usize, Vec<usize>> = HashMap::new();
+    let mut nested: HashSet<usize> = HashSet::new();
+    for &i in matched {
+        match parent_of.get(&i) {
+            // A host stays top-level rather than nesting under its own parent.
+            Some(&p) if !hosts.contains(&i) => {
+                kids.entry(p).or_default().push(i);
+                nested.insert(i);
+            }
+            _ => tops.push(i),
+        }
+    }
+    // Parents pulled in purely by a matching sub-issue. (A host that matched the
+    // preset itself is already in `tops`, so it can't be listed twice.)
+    for &p in &hosts {
+        if !matched_set.contains(&p) && kids.contains_key(&p) {
+            tops.push(p);
+        }
+    }
+
+    let rank = |i: usize| config.status_rank(items[i].status.as_deref());
+    // Stable, so cards sharing a status keep board order — as in the flat view.
+    tops.sort_by_key(|&i| rank(i));
+    let mut visible = Vec::with_capacity(matched.len() + tops.len());
+    for t in tops {
+        visible.push(t);
+        if let Some(group) = kids.get_mut(&t) {
+            group.sort_by_key(|&i| rank(i));
+            visible.append(group);
+        }
+    }
+    (visible, nested)
+}
+
 impl App {
     pub fn new(items: Vec<Item>, config: ProjectConfig) -> Self {
         let mut app = Self {
@@ -316,6 +418,7 @@ impl App {
             input_mode: InputMode::Normal,
             filter_query: String::new(),
             visible: Vec::new(),
+            nested: HashSet::new(),
             list_state: ListState::default(),
             detail: DetailState::Empty,
             detail_cache: HashMap::new(),
@@ -384,7 +487,7 @@ impl App {
         let matcher = SkimMatcherV2::default();
         let query = self.filter_query.trim();
 
-        let mut idx: Vec<usize> = self
+        let mut matched: Vec<usize> = self
             .items
             .iter()
             .enumerate()
@@ -393,8 +496,15 @@ impl App {
             .map(|(i, _)| i)
             .collect();
 
-        idx.sort_by_key(|&i| self.config.status_rank(self.items[i].status.as_deref()));
-        self.visible = idx;
+        if preset.include_parents {
+            let (visible, nested) = group_by_parent(&self.items, &self.config, preset, &matched);
+            self.visible = visible;
+            self.nested = nested;
+        } else {
+            matched.sort_by_key(|&i| self.config.status_rank(self.items[i].status.as_deref()));
+            self.visible = matched;
+            self.nested.clear();
+        }
 
         // Restore selection to the same item where possible.
         let new_sel = keep_id
@@ -505,6 +615,7 @@ impl App {
             statuses: Self::seed_options(self.board_statuses(), &[]),
             labels: Self::seed_options(self.distinct(|it| &it.labels), &[]),
             assignees: Self::seed_options(self.distinct(|it| &it.assignees), &[]),
+            grouping: FilterDraft::grouping_row(false),
             focus: 0,
             original: None,
         });
@@ -525,6 +636,7 @@ impl App {
             statuses,
             labels,
             assignees,
+            grouping: FilterDraft::grouping_row(preset.include_parents),
             focus: 0,
             original: Some(name),
         });
@@ -715,7 +827,136 @@ impl App {
 mod tests {
     use super::*;
     use crate::config::schema::ProjectConfig;
-    use crate::model::Item;
+    use crate::model::{Item, ParentRef};
+
+    /// A board card, with `#number` doubling as the id so assertions read as
+    /// issue numbers.
+    fn card(number: u64, status: &str, labels: &[&str], parent: Option<u64>) -> Item {
+        Item {
+            id: format!("#{number}"),
+            number: Some(number),
+            title: format!("issue {number}"),
+            repository: Some("o/r".into()),
+            status: Some(status.into()),
+            labels: labels.iter().map(|s| s.to_string()).collect(),
+            assignees: vec![],
+            url: None,
+            parent: parent.map(|n| ParentRef {
+                repository: "o/r".into(),
+                number: n,
+            }),
+        }
+    }
+
+    /// The visible rows as `#number`, with nested rows prefixed `└`.
+    fn rows(app: &App) -> Vec<String> {
+        app.visible
+            .iter()
+            .map(|&i| {
+                let n = app.items[i].number.unwrap();
+                if app.nested.contains(&i) {
+                    format!("└#{n}")
+                } else {
+                    format!("#{n}")
+                }
+            })
+            .collect()
+    }
+
+    /// travel-smart's shape: a `documentation` parent whose Frontend/Backend work
+    /// lives in sub-issues, alongside a standalone Frontend ticket.
+    fn parent_board() -> App {
+        let mut cfg = ProjectConfig::travel_smart();
+        cfg.presets = vec![Preset {
+            name: "frontend".into(),
+            include: Filter {
+                labels: vec!["Frontend".into()],
+                statuses: vec!["Ready To Implement".into(), "In progress".into()],
+                ..Default::default()
+            },
+            include_parents: true,
+        }];
+        let items = vec![
+            card(1002, "Ready To Implement", &["documentation"], None),
+            card(1003, "Ready To Implement", &["Backend"], Some(1002)),
+            card(1004, "In progress", &["Frontend"], Some(1002)),
+            card(1010, "Ready To Implement", &["Frontend"], None),
+            card(999, "In progress", &[], None),
+            card(1001, "Ready To Implement", &["Frontend"], Some(999)),
+        ];
+        App::new(items, cfg)
+    }
+
+    #[test]
+    fn parents_of_matching_sub_issues_are_pulled_in_and_grouped() {
+        let app = parent_board();
+        // #1002 and #999 carry no Frontend label and would be invisible without
+        // the roll-up; each is listed with only its *matching* child beneath it
+        // (#1003 is Backend, so it stays hidden).
+        assert_eq!(
+            rows(&app),
+            vec!["#1010", "#1002", "└#1004", "#999", "└#1001"]
+        );
+    }
+
+    #[test]
+    fn roll_up_is_off_without_include_parents() {
+        let mut app = parent_board();
+        app.config.presets[0].include_parents = false;
+        app.recompute(None);
+        // The flat view: only cards that match on their own, no parents.
+        assert_eq!(rows(&app), vec!["#1010", "#1001", "#1004"]);
+        assert!(app.nested.is_empty());
+    }
+
+    #[test]
+    fn an_excluded_parent_leaves_its_child_top_level() {
+        let mut app = parent_board();
+        // travel_smart excludes Done: a finished parent must not reappear just
+        // because a sub-issue is still open.
+        app.items[0].status = Some("Done".into());
+        app.recompute(None);
+        assert_eq!(rows(&app), vec!["#1010", "#1004", "#999", "└#1001"]);
+    }
+
+    #[test]
+    fn a_child_whose_parent_is_off_the_board_stays_top_level() {
+        let mut app = parent_board();
+        app.items[3].parent = Some(ParentRef {
+            repository: "o/r".into(),
+            number: 772, // a parent that was never added to the board
+        });
+        app.recompute(None);
+        assert_eq!(
+            rows(&app),
+            vec!["#1010", "#1002", "└#1004", "#999", "└#1001"]
+        );
+    }
+
+    #[test]
+    fn nesting_stops_at_one_level() {
+        let mut app = parent_board();
+        // Make #999 a sub-issue of #1002: it hosts a group of its own, so it
+        // stays top-level rather than nesting two deep.
+        app.items[4].parent = Some(ParentRef {
+            repository: "o/r".into(),
+            number: 1002,
+        });
+        app.recompute(None);
+        assert_eq!(
+            rows(&app),
+            vec!["#1010", "#1002", "└#1004", "#999", "└#1001"]
+        );
+    }
+
+    #[test]
+    fn the_fuzzy_query_still_pulls_in_parents() {
+        let mut app = parent_board();
+        app.filter_query = "1001".into();
+        app.recompute(None);
+        // Searching for a sub-issue keeps its parent for context.
+        assert_eq!(rows(&app), vec!["#999", "└#1001"]);
+    }
 
     fn item(id: &str, status: &str) -> Item {
         Item {
@@ -727,6 +968,7 @@ mod tests {
             labels: vec![],
             assignees: vec![],
             url: None,
+            parent: None,
         }
     }
 
@@ -807,6 +1049,7 @@ mod tests {
             statuses: vec![("Refine".into(), true), ("Done".into(), false)],
             labels: vec![("Frontend".into(), true)],
             assignees: vec![("me".into(), false)],
+            grouping: FilterDraft::grouping_row(false),
             focus: 0,
             original: None,
         };
@@ -831,6 +1074,7 @@ mod tests {
             statuses: vec![("s0".into(), false)],
             labels: vec![("l0".into(), false)],
             assignees: vec![("a0".into(), false)],
+            grouping: FilterDraft::grouping_row(false),
             focus: 0,
             original: None,
         };
@@ -861,16 +1105,19 @@ mod tests {
             statuses: vec![("s0".into(), false), ("s1".into(), false)],
             labels: vec![], // empty — jumps skip it
             assignees: vec![("a0".into(), false)],
+            grouping: FilterDraft::grouping_row(false),
             focus: 0,
             original: None,
         };
-        // Section starts: name=0, status=1, assignees=3 (labels absent).
+        // Section starts: name=0, status=1, assignees=3, grouping=4 (labels absent).
         draft.jump_section(1);
         assert_eq!(draft.focus, 1, "name → first status");
         draft.jump_section(1);
         assert_eq!(draft.focus, 3, "status → assignees, skipping empty labels");
         draft.jump_section(1);
-        assert_eq!(draft.focus, 3, "clamps at the last section");
+        assert_eq!(draft.focus, 4, "assignees → grouping");
+        draft.jump_section(1);
+        assert_eq!(draft.focus, 4, "clamps at the last section");
 
         // From the middle of a group, back-jump lands on that group's start first.
         draft.focus = 2; // second status row
@@ -888,6 +1135,7 @@ mod tests {
             Preset {
                 name: "custom".into(),
                 include: Filter::default(),
+                include_parents: false,
             },
             None,
         );
@@ -903,6 +1151,7 @@ mod tests {
                     statuses: vec!["Refine".into()],
                     ..Default::default()
                 },
+                include_parents: false,
             },
             None,
         );
@@ -922,6 +1171,7 @@ mod tests {
             Preset {
                 name: "draft".into(),
                 include: Filter::default(),
+                include_parents: false,
             },
             None,
         );
@@ -932,6 +1182,7 @@ mod tests {
             Preset {
                 name: "final".into(),
                 include: Filter::default(),
+                include_parents: false,
             },
             Some("draft".into()),
         );

@@ -3,7 +3,7 @@
 A lazygit-style Rust TUI for GitHub issues/tickets, run inside tmux, that drives the
 Claude Code session in the project's `claude` window to start work on a ticket.
 
-This is the build-order companion to the design note (`vault:25-ideas/lazytickets/about.md`).
+This is the build-order companion to the design note (`vault:20-projects/lazytickets/lazytickets.md`).
 All v1 scope decisions are settled there; this document is *how* and *in what order*.
 
 ---
@@ -238,12 +238,24 @@ name = "mine"
 include = { assignees = ["@me"] }
 [[projects.presets]]
 name = "frontend"
+include_parents = true              # list a parent whose sub-issue matches, children nested under it
 include = { labels = ["Frontend"], statuses = ["Refine"] }
 
 # path-keyed overrides win over git-remote resolution
 [overrides]
 "/home/dracul/projects/personal/some-repo" = "travel-smart"
 ```
+
+### Post-v1 — parent tasks / sub-issues
+
+Work is now broken down as a parent ticket holding the contract plus GitHub **sub-issues**
+per area, so a label preset hid the parent (the `Frontend` label is on the child). A preset
+with `include_parents = true` lists a parent whose sub-issue matched, with the matching
+children nested one level beneath it; a pulled-in parent bypasses the preset's own criteria
+but still honours `exclude_statuses`. The tree isn't in `gh project item-list`, so it comes
+from a second `gh api graphql` query for each item's `parent` — gated on any preset asking
+for it, and recorded in the board cache so a parent-less snapshot isn't served to a
+grouping view. Toggleable in the filter builder (`f` / `e`).
 
 ## 5. Testing approach
 - **Unit:** remote-URL normalization (`git@`/https → `owner/repo`), filter/sort logic, config

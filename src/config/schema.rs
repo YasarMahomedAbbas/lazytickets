@@ -88,11 +88,17 @@ impl Worktree {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Preset {
     pub name: String,
     #[serde(default, skip_serializing_if = "Filter::is_empty")]
     pub include: Filter,
+    /// Roll sub-issues up under their parent card. A parent whose *sub-issue*
+    /// matches `include` is shown even though the parent itself doesn't — a
+    /// `documentation` parent with a `Frontend` sub-issue belongs in the
+    /// Frontend view — and its matching children are listed beneath it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub include_parents: bool,
 }
 
 /// An include filter. Empty fields don't constrain; within a field the match is
@@ -139,6 +145,38 @@ impl Filter {
 }
 
 impl ProjectConfig {
+    /// Whether any preset groups sub-issues under their parent. The board fetch
+    /// only pays for the extra sub-issue GraphQL query when something reads it.
+    pub fn wants_parents(&self) -> bool {
+        self.presets.iter().any(|p| p.include_parents)
+    }
+
+    /// Whether a status is hidden by `exclude_statuses` without `preset` naming
+    /// it explicitly.
+    fn hidden_status(&self, preset: &Preset, status: &str) -> bool {
+        let excluded = self
+            .exclude_statuses
+            .iter()
+            .any(|e| e.eq_ignore_ascii_case(status));
+        let preset_wants = preset
+            .include
+            .statuses
+            .iter()
+            .any(|s| s.eq_ignore_ascii_case(status));
+        excluded && !preset_wants
+    }
+
+    /// Whether a card pulled in *only* because one of its sub-issues matched
+    /// should be shown. It deliberately bypasses the preset's own criteria —
+    /// that's the whole point, the parent rarely carries the child's label — but
+    /// still honours `exclude_statuses`, so a Done parent stays hidden.
+    pub fn keeps_parent(&self, preset: &Preset, item: &Item) -> bool {
+        match item.status.as_deref() {
+            Some(status) => !self.hidden_status(preset, status),
+            None => true,
+        }
+    }
+
     /// Sort key for a status: its index in `status_order`, or a large value for
     /// unknown statuses (which sink to the bottom).
     pub fn status_rank(&self, status: Option<&str>) -> usize {
@@ -158,19 +196,10 @@ impl ProjectConfig {
         if !preset.include.matches(item) {
             return false;
         }
-        if let Some(status) = item.status.as_deref() {
-            let excluded = self
-                .exclude_statuses
-                .iter()
-                .any(|e| e.eq_ignore_ascii_case(status));
-            let preset_wants = preset
-                .include
-                .statuses
-                .iter()
-                .any(|s| s.eq_ignore_ascii_case(status));
-            if excluded && !preset_wants {
-                return false;
-            }
+        if let Some(status) = item.status.as_deref()
+            && self.hidden_status(preset, status)
+        {
+            return false;
         }
         true
     }
@@ -184,6 +213,7 @@ impl ProjectConfig {
         let preset = |name: &str, f: Filter| Preset {
             name: name.to_string(),
             include: f,
+            include_parents: false,
         };
         ProjectConfig {
             name: "travel-smart".to_string(),
@@ -251,6 +281,7 @@ mod tests {
             labels: labels.iter().map(|s| s.to_string()).collect(),
             assignees: assignees.iter().map(|s| s.to_string()).collect(),
             url: None,
+            parent: None,
         }
     }
 
@@ -274,6 +305,7 @@ mod tests {
                 statuses: vec!["Done".into()],
                 ..Default::default()
             },
+            ..Default::default()
         };
         assert!(cfg.keeps(&done_preset, &item("Done", &["Frontend"], &[])));
 

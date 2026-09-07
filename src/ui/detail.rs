@@ -414,6 +414,7 @@ mod tests {
             labels: vec![],
             assignees: vec![],
             url: None,
+            parent: None,
         };
         let mut app = App::new(vec![item], ProjectConfig::travel_smart());
         // Half-blocks needs no terminal query, so it's safe under test.

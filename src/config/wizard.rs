@@ -176,6 +176,7 @@ pub async fn run(
     let mut presets = vec![Preset {
         name: "all".into(),
         include: Filter::default(),
+        ..Default::default()
     }];
     if let Ok(login) = gh::viewer_login().await
         && !login.is_empty()
@@ -186,6 +187,7 @@ pub async fn run(
                 assignees: vec![login],
                 ..Default::default()
             },
+            ..Default::default()
         });
     }
 

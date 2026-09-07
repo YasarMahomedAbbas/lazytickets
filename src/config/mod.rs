@@ -90,6 +90,7 @@ mod tests {
                     Preset {
                         name: "all".into(),
                         include: Filter::default(),
+                        include_parents: false,
                     },
                     Preset {
                         name: "mine".into(),
@@ -97,6 +98,7 @@ mod tests {
                             assignees: vec!["YasarMahomedAbbas".into()],
                             ..Default::default()
                         },
+                        include_parents: false,
                     },
                 ],
             }],

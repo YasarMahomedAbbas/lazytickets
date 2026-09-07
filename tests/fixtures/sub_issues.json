@@ -1,0 +1,88 @@
+{
+  "data": {
+    "organization": {
+      "projectV2": {
+        "items": {
+          "pageInfo": {
+            "hasNextPage": true,
+            "endCursor": "Y3Vyc29yOnYyOpKqMDAwMDAxMDQuNM4OJ90V"
+          },
+          "nodes": [
+            {
+              "content": {
+                "number": 423,
+                "repository": {
+                  "nameWithOwner": "WhiteWolfStudio/travel-smart"
+                },
+                "parent": null
+              }
+            },
+            {
+              "content": {
+                "number": 1002,
+                "repository": {
+                  "nameWithOwner": "WhiteWolfStudio/travel-smart"
+                },
+                "parent": null
+              }
+            },
+            {
+              "content": {
+                "number": 1004,
+                "repository": {
+                  "nameWithOwner": "WhiteWolfStudio/travel-smart"
+                },
+                "parent": {
+                  "number": 1002,
+                  "repository": {
+                    "nameWithOwner": "WhiteWolfStudio/travel-smart"
+                  }
+                }
+              }
+            },
+            {
+              "content": {
+                "number": 1003,
+                "repository": {
+                  "nameWithOwner": "WhiteWolfStudio/travel-smart"
+                },
+                "parent": {
+                  "number": 1002,
+                  "repository": {
+                    "nameWithOwner": "WhiteWolfStudio/travel-smart"
+                  }
+                }
+              }
+            },
+            {
+              "content": {
+                "number": 999,
+                "repository": {
+                  "nameWithOwner": "WhiteWolfStudio/travel-smart"
+                },
+                "parent": null
+              }
+            },
+            {
+              "content": {
+                "number": 1001,
+                "repository": {
+                  "nameWithOwner": "WhiteWolfStudio/travel-smart"
+                },
+                "parent": {
+                  "number": 999,
+                  "repository": {
+                    "nameWithOwner": "WhiteWolfStudio/travel-smart"
+                  }
+                }
+              }
+            },
+            {
+              "content": {}
+            }
+          ]
+        }
+      }
+    }
+  }
+}

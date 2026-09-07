@@ -24,6 +24,8 @@ const M_TODO: &str = "\u{f10c}"; // hollow circle — not started
 const M_ACTIVE: &str = "\u{f111}"; // filled circle — in flight
 const M_DONE: &str = "\u{f058}"; // check-circle — done
 const M_BLOCKED: &str = "\u{f057}"; // times-circle — blocked
+// Sub-issue rolled up under the parent card directly above it.
+const NEST_PREFIX: &str = "\u{2514} "; // └
 
 pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     // tabs (1) · list (rest) · footer (1): filter input while filtering, else hints.
@@ -73,7 +75,14 @@ fn render_list(frame: &mut Frame, area: Rect, app: &mut App) {
     let rows: Vec<ListItem> = app
         .visible
         .iter()
-        .map(|&i| row(&app.items[i], content_w, app.show_labels))
+        .map(|&i| {
+            row(
+                &app.items[i],
+                content_w,
+                app.show_labels,
+                app.nested.contains(&i),
+            )
+        })
         .collect();
 
     let title = Line::from(vec![
@@ -109,13 +118,20 @@ fn render_list(frame: &mut Frame, area: Rect, app: &mut App) {
 
 /// One list row: `● #365  Title ……  tag labels   Status`, with the status text
 /// (and labels, when shown) flushed to the right edge and the title truncated to
-/// fill the gap.
-fn row(it: &crate::model::Item, content_w: usize, show_labels: bool) -> ListItem<'static> {
+/// fill the gap. `nested` indents the row under the parent card above it, for an
+/// `include_parents` preset.
+fn row(
+    it: &crate::model::Item,
+    content_w: usize,
+    show_labels: bool,
+    nested: bool,
+) -> ListItem<'static> {
     let status = it.status.as_deref().unwrap_or("");
     let (scolor, marker) = status_marker(status);
 
     const MARKER_W: usize = 2; // glyph + space
     const NUM_W: usize = 5; // "#365 " (4-wide field + space)
+    let nest_w = if nested { 2 } else { 0 }; // "└ "
 
     // Right cluster: optional labels, then the status word.
     let mut right: Vec<Span<'static>> = Vec::new();
@@ -142,11 +158,11 @@ fn row(it: &crate::model::Item, content_w: usize, show_labels: bool) -> ListItem
     }
 
     // Title takes whatever the left/right clusters leave, keeping ≥1 col of gap.
-    let title_avail = content_w.saturating_sub(MARKER_W + NUM_W + right_w + 1);
+    let title_avail = content_w.saturating_sub(nest_w + MARKER_W + NUM_W + right_w + 1);
     let (title_txt, title_w) = truncate(&it.title, title_avail);
 
     let gap = content_w
-        .saturating_sub(MARKER_W + NUM_W + title_w + right_w)
+        .saturating_sub(nest_w + MARKER_W + NUM_W + title_w + right_w)
         .max(1);
 
     let num_color = if it.number.is_some() {
@@ -155,7 +171,11 @@ fn row(it: &crate::model::Item, content_w: usize, show_labels: bool) -> ListItem
         NORD_MUTED
     };
 
-    let mut spans = vec![
+    let mut spans = Vec::new();
+    if nested {
+        spans.push(Span::styled(NEST_PREFIX, Style::default().fg(NORD_MUTED)));
+    }
+    spans.extend([
         Span::styled(format!("{marker} "), Style::default().fg(scolor)),
         Span::styled(
             format!("{:>4} ", it.number_label()),
@@ -163,7 +183,7 @@ fn row(it: &crate::model::Item, content_w: usize, show_labels: bool) -> ListItem
         ),
         Span::styled(title_txt, Style::default().fg(NORD_TEXT)),
         Span::raw(" ".repeat(gap)),
-    ];
+    ]);
     spans.extend(right);
     ListItem::new(Line::from(spans))
 }

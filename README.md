@@ -116,6 +116,33 @@ setup = ["npm install"]           # commands run in the new session before Claud
 Sub-tables (`[projects.worktree]`, `[projects.skill]`) must come after the project's plain keys
 and before any `[[projects.presets]]`.
 
+### Parent tasks and sub-issues
+
+If you break work down into a parent ticket with GitHub **sub-issues**, a label preset hides
+the parent — the `Frontend` label lives on the sub-issue, not on the parent that holds the
+contract. `include_parents` fixes that: a parent whose sub-issue matches is listed too, with
+its matching children nested under it.
+
+```toml
+[[projects.presets]]
+name = "Frontend"
+include_parents = true            # must precede the [projects.presets.include] sub-table
+
+[projects.presets.include]
+labels = ["Frontend"]
+```
+
+```
+  #1002 Quotation acceptance — customer self-accept…   Ready To Implement
+  └ #1004 Quotation acceptance UI — confirm and acc…   Ready To Implement
+  #999  Agency quotations dashboard — quote volume…    Ready To Implement
+  └ #1001 Agency quotations dashboard page — period…   Ready To Implement
+```
+
+A pulled-in parent still honours `exclude_statuses`, so a Done parent stays hidden. The flag is
+also a checkbox in the in-TUI filter builder (`f` new, `e` edit). It costs one extra GraphQL
+query per board refresh, so it's only paid for on boards where a preset asks for it.
+
 ## Releasing (maintainers)
 
 Releases are automated and versioned with **[Semantic Versioning](https://semver.org)**

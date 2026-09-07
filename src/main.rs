@@ -126,7 +126,7 @@ async fn main() -> anyhow::Result<()> {
         },
     };
 
-    let result = match load_board(&cfg.board.owner, cfg.board.number).await {
+    let result = match load_board(&cfg.board.owner, cfg.board.number, cfg.wants_parents()).await {
         Ok(items) => {
             let mut app = App::new(items, cfg);
             run(&mut terminal, &mut app).await
@@ -141,20 +141,23 @@ async fn main() -> anyhow::Result<()> {
 /// snapshot without touching the network, otherwise fetch and re-cache it. If the
 /// fetch fails but *any* cached snapshot exists (even stale), fall back to it — so
 /// a rate-limited launch still shows the last-known board instead of an error.
-async fn load_board(owner: &str, number: u32) -> anyhow::Result<Vec<Item>> {
+async fn load_board(owner: &str, number: u32, parents: bool) -> anyhow::Result<Vec<Item>> {
     let cached = cache::load_board(owner, number);
     if let Some(c) = &cached
         && c.age() < cache::BOARD_TTL
+        // A snapshot taken without the sub-issue tree can't serve a preset that
+        // groups by parent — everything would render flat until the TTL expired.
+        && (!parents || c.value.parents)
     {
-        return Ok(c.value.clone());
+        return Ok(c.value.items.clone());
     }
-    match gh::project::item_list(owner, number).await {
-        Ok(items) => {
-            cache::save_board(owner, number, &items);
+    match gh::project::item_list_with_parents(owner, number, parents).await {
+        Ok((items, got_parents)) => {
+            cache::save_board(owner, number, &items, got_parents);
             Ok(items)
         }
         Err(e) => match cached {
-            Some(c) => Ok(c.value),
+            Some(c) => Ok(c.value.items),
             None => Err(e),
         },
     }
@@ -199,6 +202,7 @@ async fn run(terminal: &mut DefaultTerminal, app: &mut App) -> anyhow::Result<()
     let mut poll_handle = poll::spawn(
         app.config.board.owner.clone(),
         app.config.board.number,
+        app.config.wants_parents(),
         poll_tx.clone(),
     );
 
@@ -462,6 +466,7 @@ async fn run(terminal: &mut DefaultTerminal, app: &mut App) -> anyhow::Result<()
                                 KeyCode::Char('r') => poll::refresh_now(
                                     app.config.board.owner.clone(),
                                     app.config.board.number,
+                                    app.config.wants_parents(),
                                     poll_tx.clone(),
                                 ),
                                 KeyCode::Char('?') => app.modal = Modal::Help,
@@ -1034,7 +1039,7 @@ async fn confirm_create(app: &mut App, poll_tx: &mpsc::UnboundedSender<poll::Sna
 
     app.modal = Modal::Message(format!("Created #{} on {repo}.{note}", created.number));
     // Pull the board now so the new card shows without waiting for the poll.
-    poll::refresh_now(owner, number, poll_tx.clone());
+    poll::refresh_now(owner, number, app.config.wants_parents(), poll_tx.clone());
 }
 
 /// Open the selected ticket in the browser via `gh issue view --web`.
@@ -1256,12 +1261,13 @@ async fn load_board_into(
             &format!("Loading {} #{}…", project.name, project.board.number),
         );
     });
-    match load_board(&project.board.owner, project.board.number).await {
+    let parents = project.wants_parents();
+    match load_board(&project.board.owner, project.board.number, parents).await {
         Ok(items) => {
             let (owner, number) = (project.board.owner.clone(), project.board.number);
             app.switch_board(project, items);
             poll_handle.abort();
-            *poll_handle = poll::spawn(owner, number, poll_tx.clone());
+            *poll_handle = poll::spawn(owner, number, parents, poll_tx.clone());
         }
         Err(e) => app.modal = Modal::Message(format!("Couldn't load board:\n{e}")),
     }

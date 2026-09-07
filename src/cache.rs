@@ -90,13 +90,32 @@ fn write<T: Serialize + ?Sized>(path: &Path, value: &T) {
     }
 }
 
-pub fn load_board(owner: &str, number: u32) -> Option<Cached<Vec<Item>>> {
+/// A cached board snapshot. `parents` records whether the sub-issue tree was
+/// fetched alongside the cards: without it every `Item::parent` is `None`, which
+/// is indistinguishable from a board that simply has no sub-issues — so we
+/// record it rather than guess, and a view that groups by parent refetches. An
+/// entry written before this field existed fails to deserialise (it was a bare
+/// array) and reads as a plain cache miss.
+#[derive(serde::Deserialize)]
+pub struct BoardSnapshot {
+    #[serde(default)]
+    pub parents: bool,
+    pub items: Vec<Item>,
+}
+
+pub fn load_board(owner: &str, number: u32) -> Option<Cached<BoardSnapshot>> {
     read(&board_path(owner, number)?)
 }
 
-pub fn save_board(owner: &str, number: u32, items: &[Item]) {
+pub fn save_board(owner: &str, number: u32, items: &[Item], parents: bool) {
+    // A borrowing twin of `BoardSnapshot`, so the items aren't cloned to write.
+    #[derive(Serialize)]
+    struct Out<'a> {
+        parents: bool,
+        items: &'a [Item],
+    }
     if let Some(path) = board_path(owner, number) {
-        write(&path, items);
+        write(&path, &Out { parents, items });
     }
 }
 
@@ -140,12 +159,20 @@ mod tests {
             labels: vec!["bug".into()],
             assignees: vec!["me".into()],
             url: None,
+            parent: Some(crate::model::ParentRef {
+                repository: "acme/widgets".into(),
+                number: 998,
+            }),
         };
         // Save, then read back through the real path computation + serde.
-        save_board("verify-owner", 7, std::slice::from_ref(&item));
+        save_board("verify-owner", 7, std::slice::from_ref(&item), true);
         let back = load_board("verify-owner", 7).expect("cache file should exist");
-        assert_eq!(back.value.len(), 1);
-        assert_eq!(back.value[0].title, "ROUND-TRIP-PROOF");
+        assert_eq!(back.value.items.len(), 1);
+        assert_eq!(back.value.items[0].title, "ROUND-TRIP-PROOF");
+        // The sub-issue tree survives the round trip, flag and all — a snapshot
+        // that lost it would render an `include_parents` view flat.
+        assert!(back.value.parents);
+        assert_eq!(back.value.items[0].parent.as_ref().unwrap().number, 998);
         assert!(
             back.age() < BOARD_TTL,
             "a just-written entry must read as fresh"

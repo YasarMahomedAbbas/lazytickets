@@ -73,13 +73,31 @@ a project, trying in order: (1) path-keyed override, (2) git-remote `origin` nor
 `owner/repo` matched against a project's `repos`, (3) unknown → the in-TUI first-run
 `wizard`. Config lives at `~/.config/lazytickets/config.toml` (XDG via `directories`).
 `schema.rs` holds both the serde types **and** the pure filter/sort logic (`Filter::matches`,
-`ProjectConfig::keeps`, `status_rank`) — the filtering engine, unit-tested there.
+`ProjectConfig::keeps`, `keeps_parent`, `status_rank`) — the filtering engine, unit-tested there.
 
 ### Filtering model
 
 `App::recompute` rebuilds `visible` (indices into `items`) = active preset filter →
 `exclude_statuses` (unless the preset names that status) → fuzzy query, then sorts by
 `status_order` rank. Within a filter field matches are OR, across fields AND.
+
+**Parent roll-up (`include_parents`).** GitHub sub-issues break a ticket into a parent that
+holds the contract plus per-area children, so a `Frontend` label preset would hide the
+`documentation` parent. A preset with `include_parents = true` runs `app::group_by_parent`
+after the filter: a parent whose *child* matched is listed too (bypassing the preset's own
+criteria — that's the point — but still honouring `exclude_statuses`), with its matching
+children nested beneath it in `app.nested` and rendered one level in by `ui/list.rs`.
+Nesting is capped at one level: a card that hosts a group stays top-level even when it is
+itself a sub-issue. Parents that aren't on the board don't host a group.
+
+The tree isn't in `gh project item-list`, so `gh::project::parent_links` is a second
+GraphQL query (`gh api graphql`) asking each item's `parent`; inverting that is far cheaper
+than walking `subIssues` per card. `projectV2` hangs off both `organization` and `user` with
+no common root field, so the query text substitutes `$OWNER` and tries org, then user.
+`item_list_with_parents` stitches it on and reports whether the tree really arrived —
+`cache.rs` stores that as `BoardSnapshot::parents` so a parent-less snapshot is never served
+to a grouping view. The whole extra query is gated on `ProjectConfig::wants_parents()`, so a
+board with no such preset pays nothing.
 
 ### Start-work flow (M5, the headline feature)
 
