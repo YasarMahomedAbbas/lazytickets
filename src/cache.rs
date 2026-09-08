@@ -119,6 +119,18 @@ pub fn save_board(owner: &str, number: u32, items: &[Item], parents: bool) {
     }
 }
 
+/// Write `text` to the scratch Markdown file for `repo#number` (the document
+/// `v` opens in the editor) and return its path. `None` if no cache dir resolves
+/// or the write fails.
+pub fn write_view(repo: &str, number: u64, text: &str) -> Option<PathBuf> {
+    let path = cache_dir()?
+        .join("view")
+        .join(format!("{}-{number}.md", repo.replace('/', "-")));
+    std::fs::create_dir_all(path.parent()?).ok()?;
+    std::fs::write(&path, text).ok()?;
+    Some(path)
+}
+
 pub fn load_detail(repo: &str, number: u64) -> Option<Cached<IssueDetail>> {
     read(&detail_path(repo, number)?)
 }

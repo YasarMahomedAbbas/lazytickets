@@ -271,6 +271,41 @@ impl CreateDraft {
     }
 }
 
+/// One row of the rendered list: a status-group header or a card.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Row {
+    /// A collapsible status header; indexes `App::groups`.
+    Header(usize),
+    /// A card; indexes `App::items`.
+    Item(usize),
+}
+
+/// A run of `visible` sharing a status column, rendered under one header. The
+/// list is sorted by status rank, so each status is exactly one contiguous group
+/// (sub-issues nested under a parent ride along in the parent's group whatever
+/// their own status).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Group {
+    /// Display name — the board's status text, or `No status`.
+    pub name: String,
+    /// The status as the board reports it; `None` for cards without one.
+    pub status: Option<String>,
+    /// Cards in the group, nested rows included.
+    pub count: usize,
+    pub collapsed: bool,
+}
+
+impl Group {
+    /// Key into `App::collapsed`: the status, case-folded; `""` for `None`
+    /// (a real status is never blank).
+    pub fn key(status: Option<&str>) -> String {
+        status.map(|s| s.to_ascii_lowercase()).unwrap_or_default()
+    }
+}
+
+/// The header label for cards with no status column value.
+pub const NO_STATUS: &str = "No status";
+
 pub struct App {
     /// The full, unfiltered board.
     pub items: Vec<Item>,
@@ -279,11 +314,25 @@ pub struct App {
     pub input_mode: InputMode,
     pub filter_query: String,
     /// Indices into `items`, after preset + exclude + fuzzy filtering, sorted by
-    /// status order. This is what the list renders and selection indexes into.
+    /// status order — every card the current view contains, collapsed or not.
     pub visible: Vec<usize>,
     /// Subset of `visible` rendered one level in, under the parent card directly
     /// above it. Only ever populated for an `include_parents` preset.
     pub nested: HashSet<usize>,
+    /// What the list actually draws: `visible` cut into status groups, each
+    /// under a header row, with collapsed groups reduced to their header. This
+    /// is what `list_state` indexes.
+    pub rows: Vec<Row>,
+    /// The status groups of the current view, in list order.
+    pub groups: Vec<Group>,
+    /// Status keys (`Group::key`) whose group is folded. A view preference: it
+    /// survives filter changes and board switches.
+    pub collapsed: HashSet<String>,
+    /// Board-wide sub-issue tree: parent index → child indices, for every card
+    /// whose `parent` resolves to another card. Drives the parent badge in the
+    /// list and the parent / sub-issue lines in the detail pane, independent of
+    /// whether the preset rolls children up.
+    pub children: HashMap<usize, Vec<usize>>,
     pub list_state: ListState,
     pub detail: DetailState,
     pub detail_cache: HashMap<String, IssueDetail>,
@@ -395,7 +444,10 @@ fn group_by_parent(
         }
     }
 
-    let rank = |i: usize| config.status_rank(items[i].status.as_deref());
+    let rank = |i: usize| {
+        let status = items[i].status.as_deref();
+        (config.status_rank(status), Group::key(status))
+    };
     // Stable, so cards sharing a status keep board order — as in the flat view.
     tops.sort_by_key(|&i| rank(i));
     let mut visible = Vec::with_capacity(matched.len() + tops.len());
@@ -409,6 +461,25 @@ fn group_by_parent(
     (visible, nested)
 }
 
+/// The board-wide sub-issue tree as `parent index → child indices` (board
+/// order), for every card whose `parent` is itself a card on the board.
+fn children_of(items: &[Item]) -> HashMap<usize, Vec<usize>> {
+    let by_key: HashMap<ParentRef, usize> = items
+        .iter()
+        .enumerate()
+        .filter_map(|(i, it)| Some((it.key()?, i)))
+        .collect();
+    let mut out: HashMap<usize, Vec<usize>> = HashMap::new();
+    for (i, it) in items.iter().enumerate() {
+        if let Some(p) = it.parent.as_ref().and_then(|k| by_key.get(k))
+            && *p != i
+        {
+            out.entry(*p).or_default().push(i);
+        }
+    }
+    out
+}
+
 impl App {
     pub fn new(items: Vec<Item>, config: ProjectConfig) -> Self {
         let mut app = Self {
@@ -419,6 +490,10 @@ impl App {
             filter_query: String::new(),
             visible: Vec::new(),
             nested: HashSet::new(),
+            rows: Vec::new(),
+            groups: Vec::new(),
+            collapsed: HashSet::new(),
+            children: HashMap::new(),
             list_state: ListState::default(),
             detail: DetailState::Empty,
             detail_cache: HashMap::new(),
@@ -501,21 +576,107 @@ impl App {
             self.visible = visible;
             self.nested = nested;
         } else {
-            matched.sort_by_key(|&i| self.config.status_rank(self.items[i].status.as_deref()));
+            matched.sort_by_key(|&i| self.sort_key(i));
             self.visible = matched;
             self.nested.clear();
         }
+        self.children = children_of(&self.items);
+        self.rebuild_rows();
 
-        // Restore selection to the same item where possible.
+        // Restore selection to the same item where possible; a kept card inside
+        // a folded group lands on that group's header.
         let new_sel = keep_id
-            .and_then(|id| self.visible.iter().position(|&i| self.items[i].id == id))
-            .or_else(|| (!self.visible.is_empty()).then_some(0));
+            .and_then(|id| self.row_of_id(&id))
+            .or_else(|| self.rows.iter().position(|r| matches!(r, Row::Item(_))))
+            .or_else(|| (!self.rows.is_empty()).then_some(0));
         self.list_state.select(new_sel);
     }
 
+    /// Sort key for a card: status rank, then the status text so two statuses
+    /// missing from `status_order` still form separate contiguous groups.
+    pub(crate) fn sort_key(&self, i: usize) -> (usize, String) {
+        let status = self.items[i].status.as_deref();
+        (self.config.status_rank(status), Group::key(status))
+    }
+
+    /// Cut `visible` into status groups and lay out `rows`, honouring
+    /// `collapsed`. Each top-level card opens a new group when its status
+    /// differs from the previous one; nested sub-issues stay with their parent.
+    fn rebuild_rows(&mut self) {
+        self.groups.clear();
+        self.rows.clear();
+        for &i in &self.visible {
+            let status = self.items[i].status.as_deref();
+            let same_group = !self.nested.contains(&i)
+                && self
+                    .groups
+                    .last()
+                    .is_some_and(|g| Group::key(g.status.as_deref()) == Group::key(status));
+            if self.groups.is_empty() || (!self.nested.contains(&i) && !same_group) {
+                let collapsed = self.collapsed.contains(&Group::key(status));
+                self.groups.push(Group {
+                    name: status
+                        .map(str::to_string)
+                        .unwrap_or_else(|| NO_STATUS.into()),
+                    status: status.map(str::to_string),
+                    count: 0,
+                    collapsed,
+                });
+                self.rows.push(Row::Header(self.groups.len() - 1));
+            }
+            let g = self.groups.last_mut().expect("a group was just opened");
+            g.count += 1;
+            if !g.collapsed {
+                self.rows.push(Row::Item(i));
+            }
+        }
+    }
+
+    /// The row showing item `id`, or the header of its group when that group is
+    /// folded. `None` when the card isn't in the view.
+    fn row_of_id(&self, id: &str) -> Option<usize> {
+        let idx = self
+            .visible
+            .iter()
+            .copied()
+            .find(|&i| self.items[i].id == id)?;
+        if let Some(r) = self.rows.iter().position(|r| *r == Row::Item(idx)) {
+            return Some(r);
+        }
+        // Not laid out → its group is folded. A nested card sits in its parent's
+        // group, so walk `visible` back to the nearest top-level card's status.
+        let pos = self.visible.iter().position(|&i| i == idx)?;
+        let top = self.visible[..=pos]
+            .iter()
+            .rev()
+            .copied()
+            .find(|i| !self.nested.contains(i))
+            .unwrap_or(idx);
+        let key = Group::key(self.items[top].status.as_deref());
+        self.rows.iter().position(
+            |r| matches!(r, Row::Header(g) if Group::key(self.groups[*g].status.as_deref()) == key),
+        )
+    }
+
+    /// The selected row, if any.
+    pub fn selected_row(&self) -> Option<Row> {
+        self.rows.get(self.list_state.selected()?).copied()
+    }
+
+    /// The selected card. `None` on a group header or an empty view.
     pub fn selected(&self) -> Option<&Item> {
-        let vi = self.list_state.selected()?;
-        self.visible.get(vi).map(|&i| &self.items[i])
+        match self.selected_row()? {
+            Row::Item(i) => Some(&self.items[i]),
+            Row::Header(_) => None,
+        }
+    }
+
+    /// The group header under the cursor, if the cursor is on one.
+    pub fn selected_group(&self) -> Option<&Group> {
+        match self.selected_row()? {
+            Row::Header(g) => self.groups.get(g),
+            Row::Item(_) => None,
+        }
     }
 
     fn selected_id(&self) -> Option<String> {
@@ -531,16 +692,129 @@ impl App {
     }
 
     fn select_delta(&mut self, delta: isize) -> bool {
-        if self.visible.is_empty() {
+        if self.rows.is_empty() {
             return false;
         }
         let cur = self.list_state.selected().unwrap_or(0) as isize;
-        let next = (cur + delta).clamp(0, self.visible.len() as isize - 1) as usize;
+        let next = (cur + delta).clamp(0, self.rows.len() as isize - 1) as usize;
         if next as isize == cur {
             return false;
         }
         self.list_state.select(Some(next));
         true
+    }
+
+    // --- status groups ---
+
+    /// Index (into `groups`) of the group the cursor is in: its own header, or
+    /// the header above the selected card.
+    fn group_at_cursor(&self) -> Option<usize> {
+        let sel = self.list_state.selected()?;
+        self.rows[..=sel].iter().rev().find_map(|r| match r {
+            Row::Header(g) => Some(*g),
+            Row::Item(_) => None,
+        })
+    }
+
+    /// Jump the cursor to a neighbouring group header: `+1` the next group,
+    /// `-1` the previous — or, from a card, the header of its own group. Returns
+    /// whether the selection moved (the caller reschedules the detail pane).
+    pub fn jump_group(&mut self, delta: isize) -> bool {
+        let Some(sel) = self.list_state.selected() else {
+            return false;
+        };
+        let Some(cur) = self.group_at_cursor() else {
+            return false;
+        };
+        let on_header = matches!(self.rows[sel], Row::Header(_));
+        // From inside a group, `h` goes to its own header first.
+        let target = if delta < 0 && !on_header {
+            cur as isize
+        } else {
+            cur as isize + delta
+        };
+        if target < 0 || target >= self.groups.len() as isize {
+            return false;
+        }
+        let row = self
+            .rows
+            .iter()
+            .position(|r| *r == Row::Header(target as usize))
+            .expect("every group has a header row");
+        if row == sel {
+            return false;
+        }
+        self.list_state.select(Some(row));
+        true
+    }
+
+    /// Fold or unfold the group under the cursor. Folding a group while one of
+    /// its cards is selected moves the cursor to the header. Returns whether
+    /// the selection changed.
+    pub fn toggle_group(&mut self) -> bool {
+        let Some(g) = self.group_at_cursor() else {
+            return false;
+        };
+        let key = Group::key(self.groups[g].status.as_deref());
+        if !self.collapsed.remove(&key) {
+            self.collapsed.insert(key);
+        }
+        self.relayout()
+    }
+
+    /// Fold every group if any is open, else unfold them all. Returns whether
+    /// the selection changed.
+    pub fn toggle_all_groups(&mut self) -> bool {
+        let any_open = self.groups.iter().any(|g| !g.collapsed);
+        if any_open {
+            for g in &self.groups {
+                self.collapsed.insert(Group::key(g.status.as_deref()));
+            }
+        } else {
+            for g in &self.groups {
+                self.collapsed.remove(&Group::key(g.status.as_deref()));
+            }
+        }
+        self.relayout()
+    }
+
+    /// Re-lay `rows` after a fold change, keeping the cursor on the same card —
+    /// or on its group's header once that group is folded.
+    fn relayout(&mut self) -> bool {
+        let before = self.selected_row();
+        let keep_id = self.selected_id();
+        let keep_group = self.group_at_cursor();
+        self.rebuild_rows();
+        let sel = keep_id
+            .and_then(|id| self.row_of_id(&id))
+            .or_else(|| {
+                let g = keep_group?;
+                self.rows.iter().position(|r| *r == Row::Header(g))
+            })
+            .or_else(|| (!self.rows.is_empty()).then_some(0));
+        self.list_state.select(sel);
+        self.selected_row() != before
+    }
+
+    /// The board-wide sub-issues of card `i`, in board order.
+    pub fn children_of(&self, i: usize) -> &[usize] {
+        self.children.get(&i).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    /// Index of the board card that `item` is a sub-issue of, if it's on the board.
+    pub fn parent_of(&self, item: &Item) -> Option<usize> {
+        let key = item.parent.as_ref()?;
+        self.items
+            .iter()
+            .position(|it| it.key().as_ref() == Some(key))
+    }
+
+    /// Index into `items` of the selected card.
+    pub fn selected_index(&self) -> Option<usize> {
+        match self.selected_row()? {
+            Row::Item(i) => Some(i),
+            Row::Header(_) => None,
+        }
     }
 
     // --- presets ---
@@ -956,6 +1230,138 @@ mod tests {
         app.recompute(None);
         // Searching for a sub-issue keeps its parent for context.
         assert_eq!(rows(&app), vec!["#999", "└#1001"]);
+    }
+
+    /// The rendered rows: `▾ Status` / `▸ Status` for headers, `#n` for cards.
+    fn layout(app: &App) -> Vec<String> {
+        app.rows
+            .iter()
+            .map(|r| match *r {
+                Row::Header(g) => {
+                    let g = &app.groups[g];
+                    let fold = if g.collapsed { "▸" } else { "▾" };
+                    format!("{fold} {} ({})", g.name, g.count)
+                }
+                Row::Item(i) => format!("#{}", app.items[i].number.unwrap()),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn rows_are_cut_into_status_groups_with_headers() {
+        let app = parent_board();
+        assert_eq!(
+            layout(&app),
+            vec![
+                "▾ Ready To Implement (3)",
+                "#1010",
+                "#1002",
+                "#1004", // In progress, but nested under its Ready parent
+                "▾ In progress (2)",
+                "#999",
+                "#1001",
+            ]
+        );
+        // The initial selection is the first card, not the header above it.
+        assert_eq!(app.selected().map(|i| i.number), Some(Some(1010)));
+    }
+
+    #[test]
+    fn folding_a_group_hides_its_cards_and_parks_the_cursor_on_the_header() {
+        let mut app = parent_board();
+        app.list_state.select(Some(2)); // #1002
+        assert!(app.toggle_group(), "selection moved to the header");
+        assert_eq!(
+            layout(&app),
+            vec![
+                "▸ Ready To Implement (3)",
+                "▾ In progress (2)",
+                "#999",
+                "#1001"
+            ]
+        );
+        assert_eq!(app.selected_row(), Some(Row::Header(0)));
+        assert!(app.selected().is_none(), "a header is not a card");
+        assert_eq!(
+            app.selected_group().map(|g| g.name.as_str()),
+            Some("Ready To Implement")
+        );
+
+        // The fold survives a recompute (filter change / poll), and unfolding
+        // restores the rows.
+        app.recompute(None);
+        assert_eq!(app.rows.len(), 4);
+        app.list_state.select(Some(0));
+        app.toggle_group();
+        assert_eq!(app.rows.len(), 7);
+    }
+
+    #[test]
+    fn a_kept_card_inside_a_folded_group_selects_the_header() {
+        let mut app = parent_board();
+        app.collapsed.insert(Group::key(Some("In progress")));
+        app.recompute(Some("#1001".into())); // nested under #999, in the folded group
+        assert_eq!(app.selected_row(), Some(Row::Header(1)));
+    }
+
+    #[test]
+    fn h_and_l_jump_between_group_headers() {
+        let mut app = parent_board();
+        // From a card, `h` goes to its own group's header first.
+        app.list_state.select(Some(3)); // #1004
+        assert!(app.jump_group(-1));
+        assert_eq!(app.selected_row(), Some(Row::Header(0)));
+        assert!(!app.jump_group(-1), "already at the first group");
+
+        assert!(app.jump_group(1));
+        assert_eq!(app.selected_row(), Some(Row::Header(1)));
+        assert!(!app.jump_group(1), "no group after the last");
+
+        // `l` from a card skips to the *next* group's header.
+        app.list_state.select(Some(1)); // #1010
+        assert!(app.jump_group(1));
+        assert_eq!(app.selected_row(), Some(Row::Header(1)));
+    }
+
+    #[test]
+    fn toggle_all_folds_everything_then_unfolds() {
+        let mut app = parent_board();
+        app.toggle_all_groups();
+        assert!(app.groups.iter().all(|g| g.collapsed));
+        assert_eq!(app.rows.len(), 2);
+        app.toggle_all_groups();
+        assert!(app.groups.iter().all(|g| !g.collapsed));
+    }
+
+    #[test]
+    fn unknown_statuses_still_form_separate_groups() {
+        let mut cfg = ProjectConfig::travel_smart();
+        cfg.status_order.clear();
+        cfg.exclude_statuses.clear();
+        let items = vec![
+            card(1, "Zeta", &[], None),
+            card(2, "Alpha", &[], None),
+            card(3, "Zeta", &[], None),
+        ];
+        let app = App::new(items, cfg);
+        assert_eq!(
+            layout(&app),
+            vec!["▾ Alpha (1)", "#2", "▾ Zeta (2)", "#1", "#3"]
+        );
+    }
+
+    #[test]
+    fn children_map_covers_the_whole_board() {
+        let app = parent_board();
+        let kids: Vec<u64> = app
+            .children_of(0)
+            .iter()
+            .map(|&k| app.items[k].number.unwrap())
+            .collect();
+        // #1003 (Backend) is hidden by the preset but is still #1002's child.
+        assert_eq!(kids, vec![1003, 1004]);
+        assert_eq!(app.parent_of(&app.items[1]), Some(0));
+        assert_eq!(app.parent_of(&app.items[3]), None);
     }
 
     fn item(id: &str, status: &str) -> Item {

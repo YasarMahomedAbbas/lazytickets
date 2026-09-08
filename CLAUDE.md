@@ -79,7 +79,18 @@ a project, trying in order: (1) path-keyed override, (2) git-remote `origin` nor
 
 `App::recompute` rebuilds `visible` (indices into `items`) = active preset filter →
 `exclude_statuses` (unless the preset names that status) → fuzzy query, then sorts by
-`status_order` rank. Within a filter field matches are OR, across fields AND.
+`status_order` rank (ties broken by status text, so statuses missing from `status_order`
+still form contiguous groups). Within a filter field matches are OR, across fields AND.
+
+**Status groups.** The list renders `app.rows`, not `visible` directly: `rebuild_rows` cuts
+`visible` into one `Group` per status run and emits a `Row::Header` before each, dropping the
+`Row::Item`s of any group whose key is in `app.collapsed` (a view preference that survives
+recompute and board switches). `list_state` indexes `rows`, so headers are selectable —
+`selected()` is `None` on one, `selected_group()` is `Some`, and the detail pane shows a group
+summary. `h`/`l` (`jump_group`) hop between headers (from a card, `h` goes to its own header
+first); `z`/Enter (`toggle_group`) and `Z` (`toggle_all_groups`) fold; a fold that hides the
+selected card parks the cursor on its header (`relayout`, `row_of_id`). `H`/`L`/Tab switch
+presets. Nested sub-issues stay in their parent's group whatever their own status.
 
 **Parent roll-up (`include_parents`).** GitHub sub-issues break a ticket into a parent that
 holds the contract plus per-area children, so a `Frontend` label preset would hide the
@@ -95,9 +106,22 @@ GraphQL query (`gh api graphql`) asking each item's `parent`; inverting that is 
 than walking `subIssues` per card. `projectV2` hangs off both `organization` and `user` with
 no common root field, so the query text substitutes `$OWNER` and tries org, then user.
 `item_list_with_parents` stitches it on and reports whether the tree really arrived —
-`cache.rs` stores that as `BoardSnapshot::parents` so a parent-less snapshot is never served
-to a grouping view. The whole extra query is gated on `ProjectConfig::wants_parents()`, so a
-board with no such preset pays nothing.
+`cache.rs` stores that as `BoardSnapshot::parents`, and `load_board` refetches rather than
+serve a tree-less snapshot. The query is **always** made (best-effort) because the tree also
+drives parent prominence in every view: `App::children` (board-wide parent → children,
+`children_of`/`parent_of`) gives parent cards a glyph, bold title and `done/total` tally in
+`ui/list.rs`, and the detail pane's `relation_lines` list a card's parent or its sub-issues.
+
+### Detail pane rendering
+
+Issue bodies and comments are Markdown: `ui/markdown.rs` (pulldown-cmark, GFM tables /
+strikethrough / task lists) turns each text run into styled, word-wrapped `Line`s — headings,
+bold/italic, inline code, fenced blocks, bullets with hanging indents, quote bars, tables.
+`attach::split_content` still pulls images out first, so a body is Markdown runs interleaved
+with image blocks. `v` writes the ticket (title, link, body, comments) to a scratch `.md`
+under the cache dir (`cache::write_view`) and opens it in `$VISUAL`/`$EDITOR` (default
+`nvim`, `-R` for vim-family) via `tmux display-popup` (`tmux::popup_editor`) — the full
+editor rendering (LazyVim's `render-markdown`) without leaving the TUI.
 
 ### Start-work flow (M5, the headline feature)
 
@@ -167,7 +191,8 @@ orphans an issue off the board.
 - `#[allow(dead_code)]` markers on `Item` fields are intentional (consumed by later
   milestones); keep them.
 - Keybindings are all plain letters to avoid clashing with tmux `C-f` and ghostty
-  `Ctrl+Shift+*`. Full list in `PLAN.md §3` / the `?` help overlay.
+  `Ctrl+Shift+*`. Full list in `PLAN.md §3` / the `?` help overlay. Lowercase `h`/`l` are
+  the status groups, uppercase `H`/`L` the preset tabs; `i` toggles inline labels.
 
 ## Testing
 

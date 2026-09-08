@@ -126,7 +126,7 @@ async fn main() -> anyhow::Result<()> {
         },
     };
 
-    let result = match load_board(&cfg.board.owner, cfg.board.number, cfg.wants_parents()).await {
+    let result = match load_board(&cfg.board.owner, cfg.board.number).await {
         Ok(items) => {
             let mut app = App::new(items, cfg);
             run(&mut terminal, &mut app).await
@@ -141,17 +141,18 @@ async fn main() -> anyhow::Result<()> {
 /// snapshot without touching the network, otherwise fetch and re-cache it. If the
 /// fetch fails but *any* cached snapshot exists (even stale), fall back to it — so
 /// a rate-limited launch still shows the last-known board instead of an error.
-async fn load_board(owner: &str, number: u32, parents: bool) -> anyhow::Result<Vec<Item>> {
+async fn load_board(owner: &str, number: u32) -> anyhow::Result<Vec<Item>> {
     let cached = cache::load_board(owner, number);
     if let Some(c) = &cached
         && c.age() < cache::BOARD_TTL
-        // A snapshot taken without the sub-issue tree can't serve a preset that
-        // groups by parent — everything would render flat until the TTL expired.
-        && (!parents || c.value.parents)
+        // A snapshot taken without the sub-issue tree (an older build, or a
+        // failed parent query) would render every parent as a plain card until
+        // the TTL expired — refetch instead.
+        && c.value.parents
     {
         return Ok(c.value.items.clone());
     }
-    match gh::project::item_list_with_parents(owner, number, parents).await {
+    match gh::project::item_list_with_parents(owner, number).await {
         Ok((items, got_parents)) => {
             cache::save_board(owner, number, &items, got_parents);
             Ok(items)
@@ -202,7 +203,6 @@ async fn run(terminal: &mut DefaultTerminal, app: &mut App) -> anyhow::Result<()
     let mut poll_handle = poll::spawn(
         app.config.board.owner.clone(),
         app.config.board.number,
-        app.config.wants_parents(),
         poll_tx.clone(),
     );
 
@@ -435,8 +435,16 @@ async fn run(terminal: &mut DefaultTerminal, app: &mut App) -> anyhow::Result<()
                                 KeyCode::Char('q') => break,
                                 KeyCode::Char('j') | KeyCode::Down => reschedule = app.next(),
                                 KeyCode::Char('k') | KeyCode::Up => reschedule = app.prev(),
-                                KeyCode::Char('l') | KeyCode::Tab => reschedule = app.cycle_preset(1),
-                                KeyCode::Char('h') | KeyCode::BackTab => reschedule = app.cycle_preset(-1),
+                                // h/l walk the status groups; H/L (and Tab) walk the preset tabs.
+                                KeyCode::Char('l') => reschedule = app.jump_group(1),
+                                KeyCode::Char('h') => reschedule = app.jump_group(-1),
+                                KeyCode::Char('L') | KeyCode::Tab => reschedule = app.cycle_preset(1),
+                                KeyCode::Char('H') | KeyCode::BackTab => reschedule = app.cycle_preset(-1),
+                                KeyCode::Char('z') => reschedule = app.toggle_group(),
+                                KeyCode::Enter if app.selected_group().is_some() => {
+                                    reschedule = app.toggle_group();
+                                }
+                                KeyCode::Char('Z') => reschedule = app.toggle_all_groups(),
                                 KeyCode::Char(c @ '1'..='9') => {
                                     reschedule = app.set_preset(c as usize - '1' as usize);
                                 }
@@ -453,7 +461,7 @@ async fn run(terminal: &mut DefaultTerminal, app: &mut App) -> anyhow::Result<()
                                 }
                                 KeyCode::Char('c') => begin_create(app),
                                 KeyCode::Char('d') => begin_delete_preset(app),
-                                KeyCode::Char('L') => app.toggle_labels(),
+                                KeyCode::Char('i') => app.toggle_labels(),
                                 KeyCode::Char('J') => app.scroll_detail(2),
                                 KeyCode::Char('K') => app.scroll_detail(-2),
                                 KeyCode::PageDown => app.scroll_detail(12),
@@ -463,10 +471,10 @@ async fn run(terminal: &mut DefaultTerminal, app: &mut App) -> anyhow::Result<()
                                 KeyCode::Char('m') => open_status_mover(app).await,
                                 KeyCode::Char('p') => open_project_picker(app),
                                 KeyCode::Char('o') => open_in_browser(app).await,
+                                KeyCode::Char('v') => view_in_editor(app).await,
                                 KeyCode::Char('r') => poll::refresh_now(
                                     app.config.board.owner.clone(),
                                     app.config.board.number,
-                                    app.config.wants_parents(),
                                     poll_tx.clone(),
                                 ),
                                 KeyCode::Char('?') => app.modal = Modal::Help,
@@ -1039,7 +1047,7 @@ async fn confirm_create(app: &mut App, poll_tx: &mpsc::UnboundedSender<poll::Sna
 
     app.modal = Modal::Message(format!("Created #{} on {repo}.{note}", created.number));
     // Pull the board now so the new card shows without waiting for the poll.
-    poll::refresh_now(owner, number, app.config.wants_parents(), poll_tx.clone());
+    poll::refresh_now(owner, number, poll_tx.clone());
 }
 
 /// Open the selected ticket in the browser via `gh issue view --web`.
@@ -1055,6 +1063,50 @@ async fn open_in_browser(app: &mut App) {
         }
         _ => app.modal = Modal::Message("Draft item — no issue to open in the browser.".into()),
     }
+}
+
+/// Open the selected ticket in `$EDITOR` (default `nvim`) inside a tmux popup:
+/// the title, link, body and comments are written to a scratch Markdown file so
+/// an editor with Markdown rendering (LazyVim's `render-markdown`) shows the
+/// ticket the way github.com does. Read-only for vim-family editors; the popup
+/// closes when the editor exits.
+async fn view_in_editor(app: &mut App) {
+    let Some(item) = app.selected() else {
+        return; // no selection (or a group header)
+    };
+    let (Some(number), Some(repo)) = (item.number, item.repository.clone()) else {
+        app.modal = Modal::Message("Draft item — no issue to view.".into());
+        return;
+    };
+    let DetailState::Loaded(d) = &app.detail else {
+        app.modal =
+            Modal::Message("Ticket detail hasn't loaded yet — try again in a moment.".into());
+        return;
+    };
+    let Some(path) = cache::write_view(&repo, number, &view_markdown(number, d)) else {
+        app.modal = Modal::Message("Couldn't write the ticket to the cache directory.".into());
+        return;
+    };
+    if let Err(e) = tmux::popup_editor(&path, &format!(" #{number} ")).await {
+        app.modal = Modal::Message(format!("Couldn't open the editor:\n{e}"));
+    }
+}
+
+/// The Markdown document `v` hands to the editor: title, link, body, comments.
+fn view_markdown(number: u64, d: &gh::issue::IssueDetail) -> String {
+    let mut out = format!(
+        "# #{number} {}\n\n{}\n\n{}\n",
+        d.title,
+        d.url,
+        d.body.trim_end()
+    );
+    if !d.comments.is_empty() {
+        out.push_str("\n---\n\n## Comments\n");
+        for c in &d.comments {
+            out.push_str(&format!("\n### @{}\n\n{}\n", c.author, c.body.trim_end()));
+        }
+    }
+    out
 }
 
 /// Commit the open filter builder: apply the drafted preset in-memory (making it
@@ -1261,13 +1313,12 @@ async fn load_board_into(
             &format!("Loading {} #{}…", project.name, project.board.number),
         );
     });
-    let parents = project.wants_parents();
-    match load_board(&project.board.owner, project.board.number, parents).await {
+    match load_board(&project.board.owner, project.board.number).await {
         Ok(items) => {
             let (owner, number) = (project.board.owner.clone(), project.board.number);
             app.switch_board(project, items);
             poll_handle.abort();
-            *poll_handle = poll::spawn(owner, number, parents, poll_tx.clone());
+            *poll_handle = poll::spawn(owner, number, poll_tx.clone());
         }
         Err(e) => app.modal = Modal::Message(format!("Couldn't load board:\n{e}")),
     }

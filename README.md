@@ -69,6 +69,13 @@ lazytickets        # installed
 On first run in an unknown repo, an in-TUI wizard maps it to a project and writes
 `~/.config/lazytickets/config.toml`. Press `?` for the full keybinding overlay.
 
+The list is grouped by status column, in `status_order`. Each group has a header row you can
+fold: `h`/`l` jump between groups, `z` (or `Enter`) folds or unfolds the group under the cursor,
+`Z` folds or unfolds them all. `H`/`L` (or `Tab`) switch between preset tabs. Issue bodies and
+comments render as Markdown in the detail pane; `v` opens the ticket in `$EDITOR` (default
+`nvim`) inside a tmux popup for the full editor experience — LazyVim's `render-markdown` shows
+it the way github.com does.
+
 ## Starting work on a ticket
 
 Two ways to hand a ticket to Claude Code:
@@ -140,8 +147,12 @@ labels = ["Frontend"]
 ```
 
 A pulled-in parent still honours `exclude_statuses`, so a Done parent stays hidden. The flag is
-also a checkbox in the in-TUI filter builder (`f` new, `e` edit). It costs one extra GraphQL
-query per board refresh, so it's only paid for on boards where a preset asks for it.
+also a checkbox in the in-TUI filter builder (`f` new, `e` edit).
+
+Parents stand out in every view, not just roll-up presets: a card with sub-issues on the board
+gets a tree glyph, a bold title and a `done/total` tally, and the detail pane lists its sub-issues
+with their status (and, on a sub-issue, the parent it belongs to). The sub-issue tree costs one
+extra GraphQL query per board refresh, on the 30-minute poll cadence.
 
 ## Releasing (maintainers)
 

@@ -145,12 +145,6 @@ impl Filter {
 }
 
 impl ProjectConfig {
-    /// Whether any preset groups sub-issues under their parent. The board fetch
-    /// only pays for the extra sub-issue GraphQL query when something reads it.
-    pub fn wants_parents(&self) -> bool {
-        self.presets.iter().any(|p| p.include_parents)
-    }
-
     /// Whether a status is hidden by `exclude_statuses` without `preset` naming
     /// it explicitly.
     fn hidden_status(&self, preset: &Preset, status: &str) -> bool {

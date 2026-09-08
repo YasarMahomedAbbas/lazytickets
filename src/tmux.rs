@@ -109,6 +109,38 @@ pub async fn start_work_session(
     Ok(())
 }
 
+/// Open `path` in the user's editor inside a tmux popup over the current pane,
+/// blocking (in the background task) until the editor exits. `$VISUAL`/`$EDITOR`
+/// pick the editor, defaulting to `nvim`; vim-family editors get `-R` so a
+/// stray `:w` can't edit the scratch file. Errors when not inside tmux.
+pub async fn popup_editor(path: &Path, title: &str) -> Result<()> {
+    if std::env::var_os("TMUX").is_none() {
+        anyhow::bail!("`v` opens the ticket in a tmux popup, so it needs to run inside tmux");
+    }
+    let path = path.to_str().context("scratch path is not valid UTF-8")?;
+    let editor = std::env::var("VISUAL")
+        .or_else(|_| std::env::var("EDITOR"))
+        .ok()
+        .filter(|e| !e.trim().is_empty())
+        .unwrap_or_else(|| "nvim".to_string());
+    let readonly = if editor.contains("vim") { " -R" } else { "" };
+    let cmd = format!("{editor}{readonly} \"{}\"", shell_dq(path));
+    run_ok(&[
+        "display-popup",
+        "-E",
+        "-w",
+        "90%",
+        "-h",
+        "90%",
+        "-T",
+        title,
+        "-b",
+        "rounded",
+        &cmd,
+    ])
+    .await
+}
+
 /// Send `line` literally (`-l`, no key-name interpretation) followed by Enter.
 async fn send_line(target: &str, line: &str) -> Result<()> {
     run_ok(&["send-keys", "-t", target, "-l", line]).await?;

@@ -194,9 +194,13 @@ _First usable as the real tmux tool at **M4** (unhardcodes the board); does the 
 ## 3. Keybindings (v1)
 | key | action |
 |---|---|
-| `j`/`k`, `↓`/`↑` | move selection |
-| `Tab`/`Shift-Tab`, `1..9` | switch preset tab |
+| `j`/`k`, `↓`/`↑` | move selection (over cards and status-group headers) |
+| `h`/`l` | previous / next status group header |
+| `z`, `Enter` | fold / unfold the status group under the cursor |
+| `Z` | fold / unfold every group |
+| `H`/`L`, `Tab`/`Shift-Tab`, `1..9` | switch preset tab |
 | `/` | live fuzzy filter (Esc to clear) |
+| `i` | toggle inline labels |
 | `c` | create a ticket (title/description + optional label/status) |
 | `f` | new saved filter (build a preset, persists to config) |
 | `e` | edit the active filter (re-seeds the builder, persists) |
@@ -206,6 +210,7 @@ _First usable as the real tmux tool at **M4** (unhardcodes the board); does the 
 | `m` | manual status mover |
 | `p` | switch project (or add a board) |
 | `o` | open in browser |
+| `v` | view the ticket in `$EDITOR` (tmux popup, Markdown scratch file) |
 | `r` | force refresh |
 | `?` | help overlay |
 | `q` | quit |

@@ -345,23 +345,17 @@ pub async fn parent_links(owner: &str, number: u32) -> Result<HashMap<ParentRef,
     }
 }
 
-/// `item_list`, plus the sub-issue tree stitched onto each card when
-/// `with_parents` (i.e. some preset actually groups by parent — otherwise this
-/// is one to two GraphQL queries of API budget nobody reads).
+/// `item_list`, plus the sub-issue tree stitched onto each card. The tree drives
+/// the parent badge in the list and the parent / sub-issue lines in the detail
+/// pane in every view, so it's always requested — one extra GraphQL query per
+/// board refresh, on a 30-minute cadence.
 ///
 /// The parent query is **best-effort**: if it fails, the board still loads with
 /// every card top-level, which is exactly the pre-sub-issue behaviour. The
 /// returned flag says whether the tree really came back, so a parent-less
 /// snapshot isn't cached as if it had one.
-pub async fn item_list_with_parents(
-    owner: &str,
-    number: u32,
-    with_parents: bool,
-) -> Result<(Vec<Item>, bool)> {
+pub async fn item_list_with_parents(owner: &str, number: u32) -> Result<(Vec<Item>, bool)> {
     let mut items = item_list(owner, number).await?;
-    if !with_parents {
-        return Ok((items, false));
-    }
     let Ok(links) = parent_links(owner, number).await else {
         return Ok((items, false));
     };

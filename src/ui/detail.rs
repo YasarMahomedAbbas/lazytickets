@@ -7,7 +7,10 @@ use crate::app::{App, DetailState};
 use crate::attach::ContentPart;
 use crate::gh::issue::IssueDetail;
 use crate::images::{ImageEntry, Images};
-use crate::ui::{NORD_CYAN, NORD_GREEN, NORD_MUTED, NORD_PURPLE, NORD_TEXT};
+use crate::ui::list::G_PARENT;
+use crate::ui::{
+    NORD_BLUE, NORD_CYAN, NORD_GREEN, NORD_MUTED, NORD_PURPLE, NORD_TEXT, markdown, status_marker,
+};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -49,8 +52,35 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     // to now-blank cells) doesn't linger.
     frame.render_widget(Clear, inner);
 
+    // The cursor is on a status group header: summarise the group instead.
+    if let Some(g) = app.selected_group() {
+        let (color, marker) = status_marker(g.status.as_deref().unwrap_or(""));
+        let fold = if g.collapsed { "folded" } else { "open" };
+        let lines = vec![
+            Line::from(vec![
+                Span::styled(format!("{marker} "), Style::default().fg(color)),
+                Span::styled(
+                    g.name.clone(),
+                    Style::default().fg(color).add_modifier(Modifier::BOLD),
+                ),
+            ]),
+            Line::from(Span::styled(
+                format!("{} tickets · {fold}", g.count),
+                Style::default().fg(NORD_MUTED),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Enter / z  fold or unfold   ·   Z  fold all   ·   h / l  jump groups",
+                Style::default().fg(NORD_MUTED),
+            )),
+        ];
+        frame.render_widget(Paragraph::new(lines), inner);
+        return;
+    }
+
     if matches!(app.detail, DetailState::Loaded(_)) {
-        render_loaded(frame, inner, app);
+        let relations = relation_lines(app, inner.width);
+        render_loaded(frame, inner, app, relations);
         return;
     }
     let msg = match &app.detail {
@@ -93,7 +123,104 @@ impl Row {
     }
 }
 
-fn render_loaded(frame: &mut Frame, inner: Rect, app: &mut App) {
+/// The parent / sub-issue lines for the selected card, from the board's
+/// sub-issue tree: `⤴ parent #1002 Title` for a sub-issue, and a `sub-issues
+/// 1/3` block listing each child with its status for a parent.
+fn relation_lines(app: &App, width: u16) -> Vec<Line<'static>> {
+    let Some(idx) = app.selected_index() else {
+        return Vec::new();
+    };
+    let item = &app.items[idx];
+    let mut lines = Vec::new();
+    let w = width as usize;
+
+    if let Some(p) = app.parent_of(item) {
+        let parent = &app.items[p];
+        let label = format!("{G_PARENT} parent  ");
+        let num = format!("{} ", parent.number_label());
+        let (title, _) = clip(&parent.title, w.saturating_sub(label.len() + num.len()));
+        lines.push(Line::from(vec![
+            Span::styled(label, Style::default().fg(NORD_CYAN)),
+            Span::styled(num, Style::default().fg(NORD_BLUE)),
+            Span::styled(title, Style::default().fg(NORD_TEXT)),
+        ]));
+    }
+
+    let kids = app.children_of(idx);
+    if !kids.is_empty() {
+        let done = kids
+            .iter()
+            .filter(|&&k| {
+                app.items[k]
+                    .status
+                    .as_deref()
+                    .is_some_and(|s| status_marker(s).0 == NORD_GREEN)
+            })
+            .count();
+        lines.push(Line::from(vec![
+            Span::styled(format!("{G_PARENT} "), Style::default().fg(NORD_CYAN)),
+            Span::styled(
+                "sub-issues ",
+                Style::default().fg(NORD_CYAN).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("{done}/{}", kids.len()),
+                Style::default().fg(if done == kids.len() {
+                    NORD_GREEN
+                } else {
+                    NORD_CYAN
+                }),
+            ),
+        ]));
+        for &k in kids {
+            let child = &app.items[k];
+            let status = child.status.as_deref().unwrap_or("");
+            let (color, marker) = status_marker(status);
+            let num = format!("{} ", child.number_label());
+            let status_w = if status.is_empty() {
+                0
+            } else {
+                status.len() + 2
+            };
+            let (title, _) = clip(&child.title, w.saturating_sub(2 + 2 + num.len() + status_w));
+            let mut spans = vec![
+                Span::styled(format!("  {marker} "), Style::default().fg(color)),
+                Span::styled(num, Style::default().fg(NORD_BLUE)),
+                Span::styled(title, Style::default().fg(NORD_TEXT)),
+            ];
+            if !status.is_empty() {
+                spans.push(Span::styled(
+                    format!("  {status}"),
+                    Style::default().fg(color),
+                ));
+            }
+            lines.push(Line::from(spans));
+        }
+    }
+    lines
+}
+
+/// Truncate to `max` columns with an ellipsis, returning the text and its width.
+fn clip(s: &str, max: usize) -> (String, usize) {
+    let w = UnicodeWidthStr::width(s);
+    if w <= max {
+        return (s.to_string(), w);
+    }
+    let mut out = String::new();
+    let mut acc = 0;
+    for ch in s.chars() {
+        let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if acc + cw + 1 > max {
+            break;
+        }
+        out.push(ch);
+        acc += cw;
+    }
+    out.push('…');
+    (out, acc + 1)
+}
+
+fn render_loaded(frame: &mut Frame, inner: Rect, app: &mut App, relations: Vec<Line<'static>>) {
     let App {
         detail,
         detail_parts,
@@ -108,7 +235,14 @@ fn render_loaded(frame: &mut Frame, inner: Rect, app: &mut App) {
         return;
     }
 
-    let rows = build_rows(d, detail_parts, images, inner.width, inner.height);
+    let rows = build_rows(
+        d,
+        detail_parts,
+        images,
+        inner.width,
+        inner.height,
+        relations,
+    );
 
     // Clamp scroll to the content height now that we know it.
     let total: u16 = rows.iter().map(Row::height).sum();
@@ -191,16 +325,17 @@ fn note(frame: &mut Frame, area: Rect, glyph: &str, msg: &str, color: Color) {
     );
 }
 
-/// Flatten header + body parts + comments into physical rows at `width`.
+/// Flatten header + relations + body parts + comments into physical rows at
+/// `width`. Body and comment text is rendered as Markdown.
 fn build_rows(
     d: &IssueDetail,
     parts: &[ContentPart],
     images: &Images,
     width: u16,
     height: u16,
+    relations: Vec<Line<'static>>,
 ) -> Vec<Row> {
     let mut rows: Vec<Row> = Vec::new();
-    let text = Style::default().fg(NORD_TEXT);
 
     // --- header ---
     for l in wrap(
@@ -215,6 +350,10 @@ fn build_rows(
         format!("{G_LINK} {}", d.url),
         Style::default().fg(NORD_MUTED),
     ))));
+    if !relations.is_empty() {
+        rows.push(Row::Line(Line::from("")));
+        rows.extend(relations.into_iter().map(Row::Line));
+    }
     rows.push(Row::Line(Line::from("")));
 
     // --- body (text + inline images) ---
@@ -222,11 +361,7 @@ fn build_rows(
     for part in parts {
         match part {
             ContentPart::Text(t) => {
-                for src in t.split('\n') {
-                    for l in wrap(src, width, text) {
-                        rows.push(Row::Line(l));
-                    }
-                }
+                rows.extend(markdown::render(t, width).into_iter().map(Row::Line));
             }
             ContentPart::Image(iref) => {
                 let (state, dims) = match images.cache.get(&iref.url) {
@@ -265,11 +400,7 @@ fn build_rows(
                 format!("{G_USER} {}", c.author),
                 Style::default().fg(NORD_CYAN),
             ))));
-            for src in c.body.split('\n') {
-                for l in wrap(src, width, text) {
-                    rows.push(Row::Line(l));
-                }
-            }
+            rows.extend(markdown::render(&c.body, width).into_iter().map(Row::Line));
         }
     }
 

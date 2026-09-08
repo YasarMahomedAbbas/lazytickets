@@ -1,9 +1,11 @@
-//! Left pane: preset tabs, the filtered task list, and the live-filter / hint row.
+//! Left pane: preset tabs, the status-grouped task list, and the live-filter /
+//! hint row.
 
-use crate::app::{App, InputMode};
+use crate::app::{App, Group, InputMode, Row};
+use crate::model::Item;
 use crate::ui::{
-    NORD_AMBER, NORD_BLUE, NORD_CYAN, NORD_GREEN, NORD_MUTED, NORD_PURPLE, NORD_RED, NORD_SEL,
-    NORD_TEXT,
+    NORD_AMBER, NORD_BLUE, NORD_CYAN, NORD_GREEN, NORD_MUTED, NORD_PURPLE, NORD_SEL, NORD_TEXT,
+    status_marker,
 };
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -19,13 +21,14 @@ const G_TAG: &str = "\u{f02c}"; // tags — inline labels
 const G_SEARCH: &str = "\u{f002}"; // magnifier — live filter
 const G_ON: &str = "\u{f14a}"; // checked box — labels toggle on
 const G_OFF: &str = "\u{f096}"; // empty box — labels toggle off
-// Status markers: shape encodes progress, colour encodes which column.
-const M_TODO: &str = "\u{f10c}"; // hollow circle — not started
-const M_ACTIVE: &str = "\u{f111}"; // filled circle — in flight
-const M_DONE: &str = "\u{f058}"; // check-circle — done
-const M_BLOCKED: &str = "\u{f057}"; // times-circle — blocked
-// Sub-issue rolled up under the parent card directly above it.
-const NEST_PREFIX: &str = "\u{2514} "; // └
+/// Sitemap — a parent card that has sub-issues on the board.
+pub const G_PARENT: &str = "\u{f0e8}";
+// Fold state of a status group header.
+const G_OPEN: &str = "\u{25be}"; // ▾
+const G_FOLDED: &str = "\u{25b8}"; // ▸
+// Sub-issue rolled up under the parent card above it: mid / last child.
+const NEST_MID: &str = "\u{251c} "; // ├
+const NEST_END: &str = "\u{2514} "; // └
 
 pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     // tabs (1) · list (rest) · footer (1): filter input while filtering, else hints.
@@ -64,6 +67,7 @@ fn render_tabs(frame: &mut Frame, area: Rect, app: &App) {
             ));
         }
     }
+    spans.push(Span::styled("  H/L", Style::default().fg(NORD_MUTED)));
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
@@ -73,15 +77,29 @@ fn render_list(frame: &mut Frame, area: Rect, app: &mut App) {
     let content_w = (area.width as usize).saturating_sub(2 + 2 + 1);
 
     let rows: Vec<ListItem> = app
-        .visible
+        .rows
         .iter()
-        .map(|&i| {
-            row(
-                &app.items[i],
-                content_w,
-                app.show_labels,
-                app.nested.contains(&i),
-            )
+        .enumerate()
+        .map(|(r, row)| match *row {
+            Row::Header(g) => header(&app.groups[g], content_w),
+            Row::Item(i) => {
+                // A nested card is the last of its siblings when the next row
+                // isn't another nested card.
+                let nest = if app.nested.contains(&i) {
+                    let more =
+                        matches!(app.rows.get(r + 1), Some(Row::Item(n)) if app.nested.contains(n));
+                    Some(more)
+                } else {
+                    None
+                };
+                let kids = app.children_of(i);
+                let done = kids
+                    .iter()
+                    .filter(|&&k| is_done(app.items[k].status.as_deref()))
+                    .count();
+                let family = (!kids.is_empty()).then_some((done, kids.len()));
+                card(&app.items[i], content_w, app.show_labels, nest, family)
+            }
         })
         .collect();
 
@@ -116,26 +134,70 @@ fn render_list(frame: &mut Frame, area: Rect, app: &mut App) {
     frame.render_stateful_widget(list, area, &mut app.list_state);
 }
 
-/// One list row: `● #365  Title ……  tag labels   Status`, with the status text
+/// Whether a status reads as finished, for the parent's `done/total` badge.
+fn is_done(status: Option<&str>) -> bool {
+    status.is_some_and(|s| status_marker(s).0 == NORD_GREEN)
+}
+
+/// A status group header: `▾ ● In progress ────────── 4`, in the column's
+/// colour, with the fold glyph flipped when the group is collapsed.
+fn header(g: &Group, content_w: usize) -> ListItem<'static> {
+    let (color, marker) = status_marker(g.status.as_deref().unwrap_or(""));
+    let fold = if g.collapsed { G_FOLDED } else { G_OPEN };
+    let count = g.count.to_string();
+    let (name, name_w) = truncate(
+        &g.name,
+        content_w.saturating_sub(4 + count.len() + 2).max(4),
+    );
+    // fold(2) + marker(2) + name + gap + count
+    let rule_w = content_w.saturating_sub(2 + 2 + name_w + 1 + count.len() + 1);
+    let style = Style::default().fg(color).add_modifier(Modifier::BOLD);
+    let spans = vec![
+        Span::styled(format!("{fold} "), Style::default().fg(color)),
+        Span::styled(format!("{marker} "), Style::default().fg(color)),
+        Span::styled(name, style),
+        Span::styled(
+            format!(" {} ", "─".repeat(rule_w)),
+            Style::default().fg(NORD_SEL),
+        ),
+        Span::styled(count, Style::default().fg(color)),
+    ];
+    ListItem::new(Line::from(spans))
+}
+
+/// One card row: `● #365  Title ……  tag labels   Status`, with the status text
 /// (and labels, when shown) flushed to the right edge and the title truncated to
-/// fill the gap. `nested` indents the row under the parent card above it, for an
-/// `include_parents` preset.
-fn row(
-    it: &crate::model::Item,
+/// fill the gap. `nest` is `Some(more_siblings_follow)` for a sub-issue rolled
+/// up under the parent above it; `family` is `(done, total)` sub-issue counts
+/// for a parent card, which also gets the parent glyph and a bold title.
+fn card(
+    it: &Item,
     content_w: usize,
     show_labels: bool,
-    nested: bool,
+    nest: Option<bool>,
+    family: Option<(usize, usize)>,
 ) -> ListItem<'static> {
     let status = it.status.as_deref().unwrap_or("");
     let (scolor, marker) = status_marker(status);
 
     const MARKER_W: usize = 2; // glyph + space
-    const NUM_W: usize = 5; // "#365 " (4-wide field + space)
-    let nest_w = if nested { 2 } else { 0 }; // "└ "
+    // "#365 " — a 4-wide field plus space, but a 5-digit number still fits.
+    let num = format!("{:>4} ", it.number_label());
+    let num_w = UnicodeWidthStr::width(num.as_str());
+    let nest_w = if nest.is_some() { 2 } else { 0 }; // "├ " / "└ "
+    let parent_w = if family.is_some() { 2 } else { 0 }; // glyph + space
 
-    // Right cluster: optional labels, then the status word.
+    // Right cluster: sub-issue tally, optional labels, then the status word.
     let mut right: Vec<Span<'static>> = Vec::new();
     let mut right_w = 0usize;
+    if let Some((done, total)) = family {
+        let tally = format!("{done}/{total}");
+        right_w += tally.len() + 2;
+        right.push(Span::styled(
+            format!("{tally}  "),
+            Style::default().fg(if done == total { NORD_GREEN } else { NORD_CYAN }),
+        ));
+    }
     if show_labels && !it.labels.is_empty() {
         let (txt, w) = truncate(&it.labels.join(", "), (content_w / 3).max(8));
         right.push(Span::styled(
@@ -158,30 +220,41 @@ fn row(
     }
 
     // Title takes whatever the left/right clusters leave, keeping ≥1 col of gap.
-    let title_avail = content_w.saturating_sub(nest_w + MARKER_W + NUM_W + right_w + 1);
+    let left_w = nest_w + MARKER_W + num_w + parent_w;
+    let title_avail = content_w.saturating_sub(left_w + right_w + 1);
     let (title_txt, title_w) = truncate(&it.title, title_avail);
 
-    let gap = content_w
-        .saturating_sub(nest_w + MARKER_W + NUM_W + title_w + right_w)
-        .max(1);
+    let gap = content_w.saturating_sub(left_w + title_w + right_w).max(1);
 
     let num_color = if it.number.is_some() {
         NORD_BLUE
     } else {
         NORD_MUTED
     };
+    let title_style = if family.is_some() {
+        Style::default().fg(NORD_TEXT).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(NORD_TEXT)
+    };
 
     let mut spans = Vec::new();
-    if nested {
-        spans.push(Span::styled(NEST_PREFIX, Style::default().fg(NORD_MUTED)));
+    match nest {
+        Some(true) => spans.push(Span::styled(NEST_MID, Style::default().fg(NORD_MUTED))),
+        Some(false) => spans.push(Span::styled(NEST_END, Style::default().fg(NORD_MUTED))),
+        None => {}
     }
     spans.extend([
         Span::styled(format!("{marker} "), Style::default().fg(scolor)),
-        Span::styled(
-            format!("{:>4} ", it.number_label()),
-            Style::default().fg(num_color),
-        ),
-        Span::styled(title_txt, Style::default().fg(NORD_TEXT)),
+        Span::styled(num, Style::default().fg(num_color)),
+    ]);
+    if family.is_some() {
+        spans.push(Span::styled(
+            format!("{G_PARENT} "),
+            Style::default().fg(NORD_CYAN),
+        ));
+    }
+    spans.extend([
+        Span::styled(title_txt, title_style),
         Span::raw(" ".repeat(gap)),
     ]);
     spans.extend(right);
@@ -232,49 +305,20 @@ fn hint_line(app: &App) -> Line<'static> {
     };
 
     let mut spans = vec![Span::raw(" ")];
+    spans.extend(key("h/l", "group"));
+    spans.push(sep());
+    spans.extend(key("z", "fold"));
+    spans.push(sep());
     spans.extend(key("/", "filter"));
     spans.push(sep());
     // Labels toggle carries its own on/off glyph so the state is readable at rest.
-    spans.push(Span::styled("l ", Style::default().fg(NORD_CYAN)));
+    spans.push(Span::styled("i ", Style::default().fg(NORD_CYAN)));
     spans.push(Span::styled(format!("{glyph} labels"), style));
     spans.push(sep());
     spans.extend(key("s", "start"));
     spans.push(sep());
-    spans.extend(key("m", "move"));
-    spans.push(sep());
     spans.extend(key("?", "help"));
     Line::from(spans)
-}
-
-/// Marker glyph + colour for a status column. Shape encodes progress (hollow →
-/// filled → check), colour encodes the kind, so a board's columns read at a glance
-/// regardless of the exact status names a project uses.
-fn status_marker(status: &str) -> (Color, &'static str) {
-    let s = status.to_ascii_lowercase();
-    if s.contains("progress") || s.contains("doing") || s.contains("wip") {
-        (NORD_AMBER, M_ACTIVE)
-    } else if s.contains("done")
-        || s.contains("closed")
-        || s.contains("complete")
-        || s.contains("ship")
-        || s.contains("merged")
-    {
-        (NORD_GREEN, M_DONE)
-    } else if s.contains("review")
-        || s.contains("feedback")
-        || s.contains("test")
-        || s.contains("qa")
-        || s.contains("approv")
-    {
-        (NORD_PURPLE, M_ACTIVE)
-    } else if s.contains("block") || s.contains("hold") || s.contains("stuck") {
-        (NORD_RED, M_BLOCKED)
-    } else if s.is_empty() {
-        (NORD_MUTED, M_ACTIVE)
-    } else {
-        // todo / backlog / refine / ready / triage / new / future / create …
-        (NORD_BLUE, M_TODO)
-    }
 }
 
 /// Truncate `s` to at most `max` display columns, appending `…` when clipped.
@@ -300,4 +344,105 @@ fn truncate(s: &str, max: usize) -> (String, usize) {
     }
     out.push('…');
     (out, acc + 1)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::app::App;
+    use crate::config::schema::{Filter, Preset, ProjectConfig};
+    use crate::model::{Item, ParentRef};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    fn card(number: u64, status: &str, labels: &[&str], parent: Option<u64>) -> Item {
+        Item {
+            id: format!("#{number}"),
+            number: Some(number),
+            title: format!("Ticket number {number} with a longish title"),
+            repository: Some("o/r".into()),
+            status: Some(status.into()),
+            labels: labels.iter().map(|s| s.to_string()).collect(),
+            assignees: vec![],
+            url: None,
+            parent: parent.map(|n| ParentRef {
+                repository: "o/r".into(),
+                number: n,
+            }),
+        }
+    }
+
+    /// Render the grouped list into a test buffer and return its rows as text.
+    fn draw(app: &mut App, width: u16) -> Vec<String> {
+        let mut term = Terminal::new(TestBackend::new(width, 12)).unwrap();
+        term.draw(|f| {
+            let a = f.area();
+            super::render(f, a, app);
+        })
+        .unwrap();
+        let buf = term.backend().buffer().clone();
+        (0..buf.area.height)
+            .map(|y| {
+                (0..buf.area.width)
+                    .map(|x| match buf[(x, y)].symbol().chars().next() {
+                        // Nerd Font glyphs (private use area) → visible stand-in.
+                        Some(c) if ('\u{e000}'..='\u{f8ff}').contains(&c) => "#".to_string(),
+                        _ => buf[(x, y)].symbol().to_string(),
+                    })
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn grouped_list_renders_headers_badges_and_tree_lines() {
+        let mut cfg = ProjectConfig::travel_smart();
+        cfg.presets = vec![Preset {
+            name: "frontend".into(),
+            include: Filter {
+                labels: vec!["Frontend".into()],
+                ..Default::default()
+            },
+            include_parents: true,
+        }];
+        let items = vec![
+            card(1002, "Ready To Implement", &["documentation"], None),
+            card(1003, "In review", &["Frontend"], Some(1002)),
+            card(1004, "In progress", &["Frontend"], Some(1002)),
+            card(1010, "Ready To Implement", &["Frontend"], None),
+        ];
+        let mut app = App::new(items, cfg);
+        let rows = draw(&mut app, 60);
+        let text = rows.join("\n");
+        assert!(text.contains("Ready To Implement"), "{text}");
+        assert!(text.contains("In progress"), "{text}");
+        assert!(
+            text.contains("0/2"),
+            "parent badge shows done/total: {text}"
+        );
+        assert!(
+            text.contains("├"),
+            "first child gets a mid connector: {text}"
+        );
+        assert!(
+            text.contains("└"),
+            "last child gets an end connector: {text}"
+        );
+
+        // Folding drops the cards but keeps the header, at any width.
+        app.list_state.select(Some(0));
+        app.toggle_group();
+        for w in [12u16, 30, 60] {
+            let rows = draw(&mut app, w);
+            assert!(
+                rows.iter().any(|r| r.contains('▸')),
+                "folded glyph at width {w}"
+            );
+            assert!(
+                !rows.iter().any(|r| r.contains("#1002")),
+                "cards hidden at width {w}"
+            );
+        }
+    }
 }

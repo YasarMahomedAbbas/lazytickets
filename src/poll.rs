@@ -27,19 +27,13 @@ const MAX_BACKOFF: Duration = Duration::from_secs(2 * 60 * 60);
 /// Spawn the background poller for `(owner, number)`. It sends a fresh board
 /// snapshot on every successful tick and caches it to disk; rate-limit failures
 /// trigger exponential backoff, other failures retry on the next normal tick. The
-/// handle lets the caller `.abort()` it when switching boards. `parents` asks for
-/// the sub-issue tree too (`ProjectConfig::wants_parents`).
-pub fn spawn(
-    owner: String,
-    number: u32,
-    parents: bool,
-    tx: mpsc::UnboundedSender<Snapshot>,
-) -> JoinHandle<()> {
+/// handle lets the caller `.abort()` it when switching boards.
+pub fn spawn(owner: String, number: u32, tx: mpsc::UnboundedSender<Snapshot>) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut backoff: Option<Duration> = None;
         loop {
             tokio::time::sleep(backoff.unwrap_or(INTERVAL)).await;
-            match gh::project::item_list_with_parents(&owner, number, parents).await {
+            match gh::project::item_list_with_parents(&owner, number).await {
                 Ok((items, got_parents)) => {
                     backoff = None;
                     cache::save_board(&owner, number, &items, got_parents);
@@ -60,10 +54,9 @@ pub fn spawn(
 
 /// Fetch the board once, now, cache it, and send it on `tx` (drives the `r`
 /// refresh key).
-pub fn refresh_now(owner: String, number: u32, parents: bool, tx: mpsc::UnboundedSender<Snapshot>) {
+pub fn refresh_now(owner: String, number: u32, tx: mpsc::UnboundedSender<Snapshot>) {
     tokio::spawn(async move {
-        if let Ok((items, got_parents)) =
-            gh::project::item_list_with_parents(&owner, number, parents).await
+        if let Ok((items, got_parents)) = gh::project::item_list_with_parents(&owner, number).await
         {
             cache::save_board(&owner, number, &items, got_parents);
             let _ = tx.send((owner, number, items));
