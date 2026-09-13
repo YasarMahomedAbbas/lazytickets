@@ -387,6 +387,19 @@ impl Modal {
     }
 }
 
+/// Whether the `/` query keeps a card: a fuzzy match on the title, or an
+/// all-digit query (optionally `#`-prefixed) that prefixes the issue number —
+/// `12` / `#12` hits #12 and #120 but not #312, so short queries stay precise.
+fn query_matches(matcher: &SkimMatcherV2, it: &Item, query: &str) -> bool {
+    if query.is_empty() || matcher.fuzzy_match(&it.title, query).is_some() {
+        return true;
+    }
+    let digits = query.strip_prefix('#').unwrap_or(query);
+    !digits.is_empty()
+        && digits.bytes().all(|b| b.is_ascii_digit())
+        && it.number.is_some_and(|n| n.to_string().starts_with(digits))
+}
+
 /// Roll a preset's matches up under their parent card, for an `include_parents`
 /// preset.
 ///
@@ -567,7 +580,7 @@ impl App {
             .iter()
             .enumerate()
             .filter(|(_, it)| self.config.keeps(preset, it))
-            .filter(|(_, it)| query.is_empty() || matcher.fuzzy_match(&it.title, query).is_some())
+            .filter(|(_, it)| query_matches(&matcher, it, query))
             .map(|(i, _)| i)
             .collect();
 
@@ -1230,6 +1243,49 @@ mod tests {
         app.recompute(None);
         // Searching for a sub-issue keeps its parent for context.
         assert_eq!(rows(&app), vec!["#999", "└#1001"]);
+    }
+
+    /// A board whose titles don't mention their numbers, so a hit proves the
+    /// query matched the issue number itself.
+    fn numbered_board() -> App {
+        let mut cfg = ProjectConfig::travel_smart();
+        cfg.presets = vec![Preset {
+            name: "all".into(),
+            include: Filter::default(),
+            include_parents: false,
+        }];
+        let mut items = vec![
+            card(12, "In progress", &[], None),
+            card(120, "In progress", &[], None),
+            card(312, "In progress", &[], None),
+            card(7, "In progress", &[], None),
+        ];
+        for it in &mut items {
+            it.title = "fix login".into();
+        }
+        App::new(items, cfg)
+    }
+
+    #[test]
+    fn the_query_matches_issue_numbers_by_prefix() {
+        let mut app = numbered_board();
+        for q in ["12", "#12"] {
+            app.filter_query = q.into();
+            app.recompute(None);
+            let mut got = rows(&app);
+            got.sort();
+            // #312 contains "12" but not as a prefix, so it stays hidden.
+            assert_eq!(got, vec!["#12", "#120"], "query {q:?}");
+        }
+    }
+
+    #[test]
+    fn the_query_still_matches_titles() {
+        let mut app = numbered_board();
+        app.items[3].title = "dark mode".into();
+        app.filter_query = "dark".into();
+        app.recompute(None);
+        assert_eq!(rows(&app), vec!["#7"]);
     }
 
     /// The rendered rows: `▾ Status` / `▸ Status` for headers, `#n` for cards.
