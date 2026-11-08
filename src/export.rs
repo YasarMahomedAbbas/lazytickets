@@ -84,7 +84,10 @@ pub fn build(cfg: &ProjectConfig, items: &[Item]) -> Export {
     let done = |i: usize| crate::ui::list::is_done(items[i].status.as_deref());
     let rank = |i: usize| {
         let status = items[i].status.as_deref();
-        (cfg.status_rank(status), status.unwrap_or("").to_ascii_lowercase())
+        (
+            cfg.status_rank(status),
+            status.unwrap_or("").to_ascii_lowercase(),
+        )
     };
     let children = children_of(items);
     let by_key: HashMap<ParentRef, usize> = items
@@ -116,7 +119,9 @@ pub fn build(cfg: &ProjectConfig, items: &[Item]) -> Export {
         })
         .collect();
 
-    let mut order: Vec<usize> = (0..items.len()).filter(|&i| items[i].number.is_some()).collect();
+    let mut order: Vec<usize> = (0..items.len())
+        .filter(|&i| items[i].number.is_some())
+        .collect();
     order.sort_by_key(|&i| rank(i));
     let tickets = order
         .into_iter()
@@ -124,7 +129,12 @@ pub fn build(cfg: &ProjectConfig, items: &[Item]) -> Export {
             let it = &items[i];
             let kids: Vec<usize> = children
                 .get(&i)
-                .map(|k| k.iter().copied().filter(|&c| items[c].number.is_some()).collect())
+                .map(|k| {
+                    k.iter()
+                        .copied()
+                        .filter(|&c| items[c].number.is_some())
+                        .collect()
+                })
                 .unwrap_or_default();
             Ticket {
                 number: it.number.expect("filtered to numbered cards"),
@@ -214,7 +224,10 @@ mod tests {
     }
 
     fn ticket(e: &Export, n: u64) -> &Ticket {
-        e.tickets.iter().find(|t| t.number == n).expect("ticket present")
+        e.tickets
+            .iter()
+            .find(|t| t.number == n)
+            .expect("ticket present")
     }
 
     #[test]

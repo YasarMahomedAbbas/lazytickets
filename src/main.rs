@@ -184,7 +184,10 @@ async fn run_export(args: &[String]) -> anyhow::Result<()> {
                 })
             })
             .collect();
-        println!("{}", serde_json::to_string(&serde_json::json!({ "projects": projects }))?);
+        println!(
+            "{}",
+            serde_json::to_string(&serde_json::json!({ "projects": projects }))?
+        );
         return Ok(());
     }
 
@@ -194,7 +197,9 @@ async fn run_export(args: &[String]) -> anyhow::Result<()> {
             .iter()
             .find(|p| p.name.eq_ignore_ascii_case(&name))
             .cloned()
-            .ok_or_else(|| anyhow::anyhow!("no project named `{name}` in the lazytickets config"))?,
+            .ok_or_else(|| {
+                anyhow::anyhow!("no project named `{name}` in the lazytickets config")
+            })?,
         None => match resolver::resolve(&config, &std::env::current_dir()?) {
             Resolution::Project(p) => *p,
             Resolution::Unknown { repo } => anyhow::bail!(
