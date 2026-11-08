@@ -413,7 +413,7 @@ fn query_matches(matcher: &SkimMatcherV2, it: &Item, query: &str) -> bool {
 /// top-level even when it is itself a sub-issue. Parents that aren't on the
 /// board, and parents hidden by `exclude_statuses`, don't host a group — their
 /// children just stay top-level.
-fn group_by_parent(
+pub(crate) fn group_by_parent(
     items: &[Item],
     config: &ProjectConfig,
     preset: &Preset,
@@ -476,7 +476,7 @@ fn group_by_parent(
 
 /// The board-wide sub-issue tree as `parent index → child indices` (board
 /// order), for every card whose `parent` is itself a card on the board.
-fn children_of(items: &[Item]) -> HashMap<usize, Vec<usize>> {
+pub(crate) fn children_of(items: &[Item]) -> HashMap<usize, Vec<usize>> {
     let by_key: HashMap<ParentRef, usize> = items
         .iter()
         .enumerate()

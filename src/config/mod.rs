@@ -86,6 +86,7 @@ mod tests {
                 },
                 status_order: vec!["Refine".into(), "Done".into()],
                 exclude_statuses: vec!["Done".into()],
+                areas: vec![],
                 presets: vec![
                     Preset {
                         name: "all".into(),

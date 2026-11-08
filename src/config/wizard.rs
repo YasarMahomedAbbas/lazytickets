@@ -224,6 +224,7 @@ pub async fn run(
         worktree: Default::default(),
         status_order,
         exclude_statuses,
+        areas: vec![],
         presets,
     };
 

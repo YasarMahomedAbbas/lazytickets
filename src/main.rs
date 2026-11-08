@@ -2,6 +2,7 @@ mod app;
 mod attach;
 mod cache;
 mod config;
+mod export;
 mod gh;
 mod images;
 mod model;
@@ -77,9 +78,15 @@ fn handle_flags() -> bool {
             "-h" | "--help" => {
                 println!(
                     "lazytickets {} — a TUI for GitHub Projects v2 boards.\n\n\
-                     Usage: lazytickets\n\n\
+                     Usage: lazytickets\n\
+                            lazytickets export [--json] [--project NAME] [--refresh]\n\
+                            lazytickets export --list\n\n\
                      Run inside a tmux session, from within a git repo whose remote maps to a\n\
                      configured board. Press `?` in the app for keybindings.\n\n\
+                     `export` prints the board as JSON (presets already evaluated) for other\n\
+                     front-ends; it resolves the project like the TUI unless --project names\n\
+                     one, and serves the cached board when fresh (--refresh refetches).\n\
+                     `export --list` prints the configured projects.\n\n\
                      Requires `gh` (authenticated) and `tmux` on PATH.",
                     env!("CARGO_PKG_VERSION")
                 );
@@ -93,6 +100,10 @@ fn handle_flags() -> bool {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("export") {
+        return run_export(&args[1..]).await;
+    }
     if handle_flags() {
         return Ok(());
     }
@@ -135,6 +146,79 @@ async fn main() -> anyhow::Result<()> {
     };
     ratatui::restore();
     result
+}
+
+/// `lazytickets export …`: print the board (or the project list) as JSON on stdout.
+/// Never touches the terminal or tmux, so other programs can run it.
+async fn run_export(args: &[String]) -> anyhow::Result<()> {
+    let mut project: Option<String> = None;
+    let mut list = false;
+    let mut refresh = false;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--json" => {}
+            "--list" => list = true,
+            "--refresh" => refresh = true,
+            "--project" => {
+                project = Some(
+                    it.next()
+                        .cloned()
+                        .ok_or_else(|| anyhow::anyhow!("--project needs a project name"))?,
+                )
+            }
+            other => anyhow::bail!("unknown export option `{other}` (see lazytickets --help)"),
+        }
+    }
+
+    let config = Config::load()?;
+    if list {
+        let projects: Vec<serde_json::Value> = config
+            .projects
+            .iter()
+            .map(|p| {
+                serde_json::json!({
+                    "name": p.name,
+                    "repos": p.repos,
+                    "board": { "owner": p.board.owner, "number": p.board.number },
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string(&serde_json::json!({ "projects": projects }))?
+        );
+        return Ok(());
+    }
+
+    let cfg = match project {
+        Some(name) => config
+            .projects
+            .iter()
+            .find(|p| p.name.eq_ignore_ascii_case(&name))
+            .cloned()
+            .ok_or_else(|| {
+                anyhow::anyhow!("no project named `{name}` in the lazytickets config")
+            })?,
+        None => match resolver::resolve(&config, &std::env::current_dir()?) {
+            Resolution::Project(p) => *p,
+            Resolution::Unknown { repo } => anyhow::bail!(
+                "no lazytickets project for {} — pass --project NAME, or run `lazytickets` here once to set one up",
+                repo.as_deref().unwrap_or("this folder")
+            ),
+        },
+    };
+
+    let items = if refresh {
+        let (items, got_parents) =
+            gh::project::item_list_with_parents(&cfg.board.owner, cfg.board.number).await?;
+        cache::save_board(&cfg.board.owner, cfg.board.number, &items, got_parents);
+        items
+    } else {
+        load_board(&cfg.board.owner, cfg.board.number).await?
+    };
+    println!("{}", serde_json::to_string(&export::build(&cfg, &items))?);
+    Ok(())
 }
 
 /// Load a board for display, minimising API traffic: serve a fresh-enough disk
