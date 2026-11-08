@@ -135,7 +135,7 @@ fn render_list(frame: &mut Frame, area: Rect, app: &mut App) {
 }
 
 /// Whether a status reads as finished, for the parent's `done/total` badge.
-fn is_done(status: Option<&str>) -> bool {
+pub(crate) fn is_done(status: Option<&str>) -> bool {
     status.is_some_and(|s| status_marker(s).0 == NORD_GREEN)
 }
 

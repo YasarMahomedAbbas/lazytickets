@@ -31,6 +31,12 @@ pub struct ProjectConfig {
     /// Statuses hidden by default (unless a preset explicitly includes one).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub exclude_statuses: Vec<String>,
+    /// Area labels (e.g. `Frontend`, `Backend`) that `lazytickets export` groups
+    /// tickets by: a ticket's area is the first of these it carries, else `Other`.
+    /// Must come before any `[[projects.presets]]` in the TOML, like the other
+    /// plain keys.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub areas: Vec<String>,
     /// Saved views. The first entry is the default on launch.
     #[serde(default)]
     pub presets: Vec<Preset>,
@@ -233,6 +239,7 @@ impl ProjectConfig {
             .map(|s| s.to_string())
             .collect(),
             exclude_statuses: vec!["Done".to_string(), "Backlog".to_string()],
+            areas: vec![],
             presets: vec![
                 preset("all", Filter::default()),
                 preset(
